@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+data/results/*
+data/browser-profiles/*
+!data/results/.gitkeep
+!data/browser-profiles/.gitkeep
+.env
+*.egg-info/

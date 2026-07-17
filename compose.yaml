@@ -1,0 +1,50 @@
+services:
+  crawler-mcp:
+    build: .
+    container_name: crawler-mcp
+    restart: unless-stopped
+    shm_size: 2gb
+
+    environment:
+      MCP_TRANSPORT: streamable-http
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: 8000
+
+      DATA_DIR: /data
+      MAX_CONCURRENCY: 5
+      MAX_BROWSER_PAGES: 3
+      MAX_PER_DOMAIN: 1
+
+      HTTP_TIMEOUT_SECONDS: 15
+      BROWSER_TIMEOUT_SECONDS: 60
+      STEALTH_TIMEOUT_SECONDS: 90
+
+      CACHE_TTL_SECONDS: 900
+      RESULT_TTL_SECONDS: 86400
+      MAX_INLINE_MARKDOWN_BYTES: 51200
+      MAX_MARKDOWN_BYTES: 2097152
+      MAX_HTML_BYTES: 10485760
+
+      DATABASE_URL: ${CRAWLER_DATABASE_URL}
+
+    volumes:
+      - crawler-data:/data
+
+    ports:
+      - "127.0.0.1:8000:8000"
+
+    networks:
+      - hermes-net
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  crawler-data:
+
+networks:
+  hermes-net:
+    external: true
