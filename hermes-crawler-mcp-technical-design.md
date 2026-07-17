@@ -477,6 +477,8 @@ domain_semaphores: dict[str, asyncio.Semaphore] = {}
 
 任务完成后必须销毁 Browser Context，清理临时目录、页面和下载文件。
 
+> 实现时确认（M5 spike 结论）：Scrapling 的 `AsyncDynamicSession` / `AsyncStealthySession` 已经原生提供"共享浏览器进程 + 页面池"能力——它们是长生命周期对象（`start()` / `fetch()` / `close()`），通过构造参数 `max_pages` 控制页面池上限，并提供 `get_pool_stats()`（返回 `total_pages` / `busy_pages` / `max_pages`）。因此 `browser_pool.py` 不再重复实现 Chromium 进程与 Context 生命周期管理，而是把这两个 Session 作为长生命周期单例持有，只额外补齐 Scrapling 不覆盖的部分：跨 HTTP+浏览器的总并发上限、单域名串行、以及浏览器重启周期。此外，Playwright 浏览器二进制版本必须与 Playwright 库版本匹配，需在 Dockerfile 中执行 `playwright install chromium`（StealthyFetcher 依赖的 camoufox/Firefox 由 Scrapling 自行管理）。
+
 容器资源建议：
 
 ```text

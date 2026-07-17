@@ -27,6 +27,9 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "browser: tests that launch a real headless browser (slow, needs playwright browsers)",
+]
 
 [tool.ruff]
 line-length = 100
