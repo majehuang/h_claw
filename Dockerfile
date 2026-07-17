@@ -10,16 +10,17 @@ WORKDIR /srv/app
 
 # 浏览器二进制放到共享、全局可读的路径，便于非 root 用户运行时读取。
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-ENV CAMOUFOX_DOWNLOAD_PATH=/ms-camoufox
 
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
-# 安装浏览器运行所需的系统依赖与浏览器二进制（Chromium + camoufox）。
-# playwright install-deps 需要 root；scrapling install 下载全部 Fetcher 依赖。
-RUN uv run playwright install-deps chromium \
-    && uv run scrapling install \
-    && chmod -R a+rX /ms-playwright /ms-camoufox
+# 安装 Chromium 及其系统依赖（DynamicFetcher 用）。scrapling install 会执行
+# playwright install chromium + install-deps（需 root），并写入 /ms-playwright。
+# 隐身层（StealthyFetcher）依赖的 camoufox 为按需下载，容器内 stealth 支持
+# 在 M10 容器化验收阶段单独补齐（camoufox fetch 到共享路径），此处先保证
+# HTTP 与浏览器两层可用。
+RUN uv run scrapling install \
+    && chmod -R a+rX /ms-playwright
 
 COPY app ./app
 
