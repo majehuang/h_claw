@@ -14,12 +14,13 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
-# 安装 Chromium 及其系统依赖（DynamicFetcher 用）。scrapling install 会执行
-# playwright install chromium + install-deps（需 root），并写入 /ms-playwright。
-# 隐身层（StealthyFetcher）依赖的 camoufox 为按需下载，容器内 stealth 支持
-# 在 M10 容器化验收阶段单独补齐（camoufox fetch 到共享路径），此处先保证
-# HTTP 与浏览器两层可用。
+# 安装 Chromium 及其系统依赖。scrapling install 执行 playwright install chromium
+# + install-deps（需 root），写入 /ms-playwright。三层抓取共用这一个 chromium
+# 二进制：HTTP 用 curl_cffi（无需浏览器）、DynamicFetcher 用 playwright chromium、
+# StealthyFetcher 用 patchright chromium——patchright 复用同版本 playwright chromium
+# （chromium-1228），因此无需额外下载 camoufox 或第二套浏览器。
 RUN uv run scrapling install \
+    && uv run patchright install chromium \
     && chmod -R a+rX /ms-playwright
 
 COPY app ./app
