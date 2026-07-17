@@ -30,6 +30,23 @@ services:
     volumes:
       - crawler-data:/data
 
+    # 容器隔离（第 14.2 节）：只读根文件系统 + 仅 /data 卷可写，
+    # 浏览器临时文件写入 tmpfs（/tmp 与 /dev/shm），已实测不影响 Chromium。
+    read_only: true
+    tmpfs:
+      - /tmp:rw,size=512m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    # 资源限制（第 8 节：2 核 / 4GB / 2GB 共享内存）。
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 4g
+
     ports:
       - "127.0.0.1:8000:8000"
 
