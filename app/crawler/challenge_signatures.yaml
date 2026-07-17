@@ -1,0 +1,27 @@
+# 通用反爬供应商特征库，不按域名区分（域名级偏好见 crawl_domain_rules 表）。
+# 发现新的验证码/挑战供应商时只改这个文件，不改 detector.py 代码。
+
+keywords:
+  - "请完成安全验证"
+  - "验证您是真人"
+  - "访问受限"
+  - "unusual traffic"
+  - "verify you are human"
+  - "access denied"
+  - "checking your browser"
+
+selectors:
+  - "#cf-challenge-stage"
+  - "div.g-recaptcha"
+  - "iframe[src*='hcaptcha']"
+  - "iframe[src*='recaptcha']"
+
+login_path_patterns:
+  - "/login"
+  - "/signin"
+  - "/sign-in"
+  - "/account/login"
+
+captcha_domains:
+  - "challenges.cloudflare.com"
+  - "captcha-delivery.com"

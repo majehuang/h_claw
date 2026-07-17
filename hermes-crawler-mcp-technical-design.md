@@ -427,10 +427,12 @@ async def crawl(request, session: SessionContext | None = None):
 1. **HTTP 状态码**：命中 `domain_rule.escalate_status_codes`（默认 403/429/503）→ `blocked_status`。
 2. **重定向目标匹配**：`final_url` 落在已知登录/验证码路径或域名（如 `/login`、`/signin`、`challenges.cloudflare.com`、`*.captcha-delivery.com`）→ `login_redirect` / `captcha_redirect`。
 3. **正文特征匹配**：关键词库（"请完成安全验证"、"Verify you are human"、"unusual traffic" 等，多语言）+ 已知供应商 DOM 特征（`#cf-challenge-stage`、`div.g-recaptcha`、`iframe[src*=hcaptcha]`）→ `captcha_detected`。
-4. **正文长度**：去除 `script`/`style` 后可见文本小于 `rule.min_content_bytes`（默认 2KB）→ `short_content`。
-5. **SPA 壳检测**：body 内除 `#app`/`#root`/`#__next` 等已知根节点外几乎没有文本，且没有 JSON-LD/OG → `spa_shell`。
+4. **SPA 壳检测**：body 内除 `#app`/`#root`/`#__next` 等已知根节点外几乎没有文本，且没有 JSON-LD/OG → `spa_shell`。
+5. **正文长度**：去除 `script`/`style` 后可见文本小于 `rule.min_content_bytes`（默认 2KB）→ `short_content`。
 6. **结构化信号缺失**：找不到 `<title>`、JSON-LD、`og:title`/`og:description`，也匹配不到常见价格正则 → `no_structured_signal`。
 7. **URL 一致性**：`final_url` 的 host 与请求域名差异过大，且不在允许的同站跳转范围内 → `url_mismatch`。
+
+> 实现时发现：SPA 壳页面的可见文本几乎总是为空，天然也满足"正文长度"的判定条件。如果按最初的顺序（先查长度、再查 SPA 壳），`short_content` 会在几乎所有 SPA 壳场景下抢先命中，`spa_shell` 这个更具体的诊断结果永远不会被触发。因此把 SPA 壳检测调整到正文长度检测之前，让更具体的信号优先命中，短内容检测保留给"有一些内容但仍不够"的场景。
 
 Orchestrator 侧映射规则：非最后一层命中任意信号（包括 captcha/login 类）都只触发"尝试下一层"；只有 stealth（最后一层）仍命中 captcha/login 类信号，才转换成终态 `CAPTCHA_REQUIRED` / `LOGIN_REQUIRED`。其余信号在最后一层仍未通过时，统一归为 `BLOCKED` 或 `FAILED`（取决于是否曾经取得部分内容）。这与第 7.4 节"每一级最多执行一次"的约束一致。
 
