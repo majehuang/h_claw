@@ -5,11 +5,17 @@ from fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from starlette.responses import PlainTextResponse
+
 from app.config import Settings
+from app.observability.logging import setup_logging
+from app.observability.metrics import Metrics, render_prometheus
 from app.service_factory import build_service
 from app.tools.crawl_url import crawl_url_impl
 from app.tools.read_result import read_result_impl
 from app.tools.service import Service
+
+metrics = Metrics()
 
 _service_holder: dict[str, Service] = {}
 
@@ -78,12 +84,18 @@ async def healthz(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
+@mcp.custom_route("/metrics", methods=["GET"])
+async def metrics_endpoint(request: Request) -> PlainTextResponse:
+    return PlainTextResponse(render_prometheus(metrics))
+
+
 def build_asgi_app():
     return mcp.http_app()
 
 
 def main() -> None:
     settings = Settings()
+    setup_logging()
     if settings.mcp_transport == "stdio":
         mcp.run(transport="stdio")
     else:
