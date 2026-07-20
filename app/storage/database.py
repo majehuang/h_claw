@@ -52,8 +52,36 @@ class DomainRule:
     source: str = "manual"
 
 
+@dataclass(frozen=True)
+class AccountProfile:
+    session_id: str
+    domain: str
+    label: str | None
+    status: str
+    fingerprint_id: str | None
+    created_at: datetime
+    last_used_at: datetime | None
+    expires_at: datetime | None
+
+
+_ACCOUNT_PROFILE_COLUMNS = (
+    "session_id",
+    "domain",
+    "label",
+    "status",
+    "fingerprint_id",
+    "created_at",
+    "last_used_at",
+    "expires_at",
+)
+
+
 def _row_to_result(row: asyncpg.Record) -> CrawlResultRecord:
     return CrawlResultRecord(**{col: row[col] for col in _CRAWL_RESULT_COLUMNS})
+
+
+def _row_to_profile(row: asyncpg.Record) -> AccountProfile:
+    return AccountProfile(**{col: row[col] for col in _ACCOUNT_PROFILE_COLUMNS})
 
 
 def _row_to_domain_rule(row: asyncpg.Record) -> DomainRule:
@@ -87,7 +115,8 @@ class Database:
     async def truncate_all(self) -> None:
         async with self._pool.acquire() as conn:
             await conn.execute(
-                f"TRUNCATE {_SCHEMA}.crawl_results, {_SCHEMA}.crawl_domain_rules"
+                f"TRUNCATE {_SCHEMA}.crawl_results, {_SCHEMA}.crawl_domain_rules, "
+                f"{_SCHEMA}.account_profiles"
             )
 
     async def upsert_crawl_result(self, record: CrawlResultRecord) -> None:
@@ -175,4 +204,65 @@ class Database:
                 rule.min_content_bytes,
                 escalate_status_codes,
                 rule.source,
+            )
+
+    async def upsert_profile(self, profile: AccountProfile) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                f"""
+                INSERT INTO {_SCHEMA}.account_profiles (
+                    session_id, domain, label, status, fingerprint_id,
+                    created_at, last_used_at, expires_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (session_id) DO UPDATE SET
+                    domain = EXCLUDED.domain,
+                    label = EXCLUDED.label,
+                    status = EXCLUDED.status,
+                    fingerprint_id = EXCLUDED.fingerprint_id,
+                    last_used_at = EXCLUDED.last_used_at,
+                    expires_at = EXCLUDED.expires_at
+                """,
+                profile.session_id,
+                profile.domain,
+                profile.label,
+                profile.status,
+                profile.fingerprint_id,
+                profile.created_at,
+                profile.last_used_at,
+                profile.expires_at,
+            )
+
+    async def get_profile(self, session_id: str) -> AccountProfile | None:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"SELECT * FROM {_SCHEMA}.account_profiles WHERE session_id = $1",
+                session_id,
+            )
+        return _row_to_profile(row) if row else None
+
+    async def list_profiles(self) -> list[AccountProfile]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"SELECT * FROM {_SCHEMA}.account_profiles ORDER BY session_id"
+            )
+        return [_row_to_profile(row) for row in rows]
+
+    async def revoke_profile(self, session_id: str) -> bool:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"UPDATE {_SCHEMA}.account_profiles SET status = 'REVOKED' "
+                f"WHERE session_id = $1 RETURNING session_id",
+                session_id,
+            )
+        return row is not None
+
+    async def touch_profile_last_used(
+        self, session_id: str, now: datetime
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                f"UPDATE {_SCHEMA}.account_profiles SET last_used_at = $2 "
+                f"WHERE session_id = $1",
+                session_id,
+                now,
             )

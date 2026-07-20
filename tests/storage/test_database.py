@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app.storage.database import CrawlResultRecord, DomainRule
+from app.storage.database import AccountProfile, CrawlResultRecord, DomainRule
 
 pytestmark = pytest.mark.asyncio
 
@@ -122,6 +122,77 @@ async def test_delete_domain_rule_removes_and_reports(db):
 
 async def test_delete_domain_rule_returns_false_when_absent(db):
     assert await db.delete_domain_rule("missing.example.com") is False
+
+
+def _profile(**overrides) -> AccountProfile:
+    now = datetime.now(timezone.utc)
+    base = dict(
+        session_id="jd-user-001",
+        domain="www.jd.com",
+        label="jd-主账号",
+        status="ACTIVE",
+        fingerprint_id="fp_abc",
+        created_at=now,
+        last_used_at=None,
+        expires_at=now + timedelta(days=30),
+    )
+    base.update(overrides)
+    return AccountProfile(**base)
+
+
+async def test_upsert_and_get_profile(db):
+    await db.upsert_profile(_profile())
+
+    fetched = await db.get_profile("jd-user-001")
+
+    assert fetched is not None
+    assert fetched.domain == "www.jd.com"
+    assert fetched.label == "jd-主账号"
+    assert fetched.status == "ACTIVE"
+    assert fetched.fingerprint_id == "fp_abc"
+
+
+async def test_get_profile_returns_none_when_absent(db):
+    assert await db.get_profile("missing") is None
+
+
+async def test_upsert_profile_updates_existing(db):
+    await db.upsert_profile(_profile(label="旧名", status="ACTIVE"))
+    await db.upsert_profile(_profile(label="新名", status="ACTIVE"))
+
+    fetched = await db.get_profile("jd-user-001")
+    assert fetched.label == "新名"
+
+
+async def test_list_profiles_sorted(db):
+    await db.upsert_profile(_profile(session_id="b", domain="b.com"))
+    await db.upsert_profile(_profile(session_id="a", domain="a.com"))
+
+    profiles = await db.list_profiles()
+
+    assert [p.session_id for p in profiles] == ["a", "b"]
+
+
+async def test_revoke_profile_marks_status_and_reports(db):
+    await db.upsert_profile(_profile())
+
+    revoked = await db.revoke_profile("jd-user-001")
+
+    assert revoked is True
+    assert (await db.get_profile("jd-user-001")).status == "REVOKED"
+
+
+async def test_revoke_profile_returns_false_when_absent(db):
+    assert await db.revoke_profile("missing") is False
+
+
+async def test_touch_profile_last_used(db):
+    await db.upsert_profile(_profile(last_used_at=None))
+    ts = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+
+    await db.touch_profile_last_used("jd-user-001", ts)
+
+    assert (await db.get_profile("jd-user-001")).last_used_at == ts
 
 
 async def test_connect_with_bad_dsn_raises():

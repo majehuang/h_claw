@@ -46,6 +46,31 @@ def test_env_overrides_defaults(monkeypatch):
     assert settings.database_url == "postgresql://user:pass@postgres:5432/hermes_crawler"
 
 
+def test_profile_defaults(monkeypatch):
+    for key in [
+        "PROFILE_ENCRYPTION_KEY", "PROFILES_DIR",
+        "PROFILE_TTL_SECONDS", "MAX_ACTIVE_PROFILES",
+    ]:
+        monkeypatch.delenv(key, raising=False)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.profile_encryption_key is None
+    assert settings.profiles_dir == Path("/data/profiles")
+    assert settings.profile_ttl_seconds == 2592000  # 30 天
+    assert settings.max_active_profiles == 2
+
+
+def test_profile_env_overrides(monkeypatch):
+    monkeypatch.setenv("PROFILE_ENCRYPTION_KEY", "s3cr3t-key")
+    monkeypatch.setenv("MAX_ACTIVE_PROFILES", "5")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.profile_encryption_key == "s3cr3t-key"
+    assert settings.max_active_profiles == 5
+
+
 def test_rejects_invalid_transport(monkeypatch):
     monkeypatch.setenv("MCP_TRANSPORT", "carrier-pigeon")
 

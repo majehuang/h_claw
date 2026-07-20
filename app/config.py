@@ -28,3 +28,10 @@ class Settings(BaseSettings):
     max_html_bytes: int = 10485760
 
     database_url: str | None = None
+
+    # Phase 3a — 持久 Profile（见 phase-3 设计 §4.2.1 / §15.1）
+    # 主密钥从部署环境注入，绝不进镜像/日志/Git/data 卷；未配置时 profile 功能不可用。
+    profile_encryption_key: str | None = None
+    profiles_dir: Path = Path("/data/profiles")
+    profile_ttl_seconds: int = 2592000  # 30 天
+    max_active_profiles: int = 2
