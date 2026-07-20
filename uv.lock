@@ -300,6 +300,7 @@ source = { editable = "." }
 dependencies = [
     { name = "asyncpg" },
     { name = "beautifulsoup4" },
+    { name = "cryptography" },
     { name = "fastmcp" },
     { name = "lxml" },
     { name = "markdownify" },
@@ -322,6 +323,7 @@ dev = [
 requires-dist = [
     { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "beautifulsoup4", specifier = ">=4.15.0" },
+    { name = "cryptography", specifier = ">=44.0" },
     { name = "fastmcp", specifier = ">=2.0" },
     { name = "lxml", specifier = ">=6.1.1" },
     { name = "markdownify", specifier = ">=1.2.3" },
