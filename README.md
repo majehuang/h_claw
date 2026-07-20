@@ -1,5 +1,7 @@
 # Hermes 一体化爬虫 MCP 服务
 
+[English](./README.en.md) · **中文**
+
 > 单进程 FastMCP + Scrapling 三层抓取 + PostgreSQL 缓存 + SSRF 防护
 
 一个把 **MCP 协议、网页抓取、浏览器池、反爬处理、HTML 清洗、Markdown 转换、缓存与结果存储** 整合到同一个进程、同一个 Docker 容器里的爬虫服务。上游 Agent 通过 MCP 提交任意公开网页 URL，服务自动选择抓取策略并返回适合阅读的 Markdown。
