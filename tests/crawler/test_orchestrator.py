@@ -208,6 +208,89 @@ async def test_mode_stealth_only_uses_stealth(tmp_path):
     assert outcome.fetch_mode == "stealth"
 
 
+async def test_domain_preferred_stealth_skips_http_and_browser(tmp_path):
+    from app.storage.database import DomainRule
+
+    # 即便 HTTP 层能返回可用内容，白名单域名（preferred_mode=stealth）也应直连 L3，
+    # 不再从 L1 升级，避免多层请求触发目标站频率限制。
+    http = FakeFetcher(_resp())
+    browser = FakeFetcher(_resp())
+    stealth = FakeFetcher(_resp())
+    rule = DomainRule(domain="shop.example.com", preferred_mode="stealth")
+    orch = _orchestrator(
+        tmp_path, db=FakeDB(domain_rule=rule),
+        http=http, browser=browser, stealth=stealth,
+    )
+
+    outcome = await orch.crawl(CrawlRequest(url="https://shop.example.com/p/1"))
+
+    assert outcome.status == "SUCCESS"
+    assert outcome.fetch_mode == "stealth"
+    assert http.calls == []
+    assert browser.calls == []
+    assert stealth.calls == ["https://shop.example.com/p/1"]
+
+
+async def test_domain_preferred_browser_starts_at_browser_and_can_escalate(tmp_path):
+    from app.storage.database import DomainRule
+
+    # preferred_mode=browser：从 L2 起步，仍可在不足时升级到 L3，但不打 L1。
+    http = FakeFetcher(_resp())
+    browser = FakeFetcher(_resp(html="<html><body>太短</body></html>"))
+    stealth = FakeFetcher(_resp())
+    rule = DomainRule(domain="shop.example.com", preferred_mode="browser")
+    orch = _orchestrator(
+        tmp_path, db=FakeDB(domain_rule=rule),
+        http=http, browser=browser, stealth=stealth,
+    )
+
+    outcome = await orch.crawl(CrawlRequest(url="https://shop.example.com/p/1"))
+
+    assert outcome.status == "SUCCESS"
+    assert outcome.fetch_mode == "stealth"
+    assert http.calls == []
+    assert browser.calls == ["https://shop.example.com/p/1"]
+    assert stealth.calls == ["https://shop.example.com/p/1"]
+
+
+async def test_explicit_request_mode_overrides_domain_preferred_mode(tmp_path):
+    from app.storage.database import DomainRule
+
+    # 调用方显式指定 mode 时优先于域名规则；preferred_mode 只作用于 auto。
+    http = FakeFetcher(_resp(html="<html><body>太短</body></html>"))
+    stealth = FakeFetcher(_resp())
+    rule = DomainRule(domain="shop.example.com", preferred_mode="stealth")
+    orch = _orchestrator(
+        tmp_path, db=FakeDB(domain_rule=rule), http=http, stealth=stealth,
+    )
+
+    outcome = await orch.crawl(
+        CrawlRequest(url="https://shop.example.com/p/1", mode="http")
+    )
+
+    assert http.calls == ["https://shop.example.com/p/1"]
+    assert stealth.calls == []
+    assert outcome.status == "BLOCKED"
+
+
+async def test_domain_preferred_auto_uses_full_escalation(tmp_path):
+    from app.storage.database import DomainRule
+
+    # preferred_mode=auto（默认）时行为不变：从 L1 起步的完整升级链。
+    http = FakeFetcher(_resp())
+    browser = FakeFetcher(_resp())
+    rule = DomainRule(domain="shop.example.com", preferred_mode="auto")
+    orch = _orchestrator(
+        tmp_path, db=FakeDB(domain_rule=rule), http=http, browser=browser,
+    )
+
+    outcome = await orch.crawl(CrawlRequest(url="https://shop.example.com/p/1"))
+
+    assert outcome.fetch_mode == "http"
+    assert http.calls == ["https://shop.example.com/p/1"]
+    assert browser.calls == []
+
+
 async def test_cache_hit_returns_cached_without_fetching(tmp_path):
     from app.storage.database import CrawlResultRecord
 

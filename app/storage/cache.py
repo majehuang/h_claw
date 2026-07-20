@@ -20,19 +20,20 @@ def _canonicalize_url(url: str) -> str:
 
 def compute_cache_key(
     url: str,
-    mode: str,
     include_images: bool,
     locale: str | None,
     session_id: str | None,
 ) -> str:
     """按第 12 节生成缓存键：
-    SHA256(canonical_url + mode + include_images + locale + session_id)。
+    SHA256(canonical_url + include_images + locale + session_id)。
+
+    抓取层级（http/browser/stealth）不影响页面内容，故不纳入缓存键——否则同一
+    URL 在 auto 与白名单直连 stealth 之间会各存一份，降低命中率。
     """
     canonical_url = _canonicalize_url(url)
     material = "\n".join(
         [
             canonical_url,
-            mode,
             "1" if include_images else "0",
             locale or "",
             session_id or "",

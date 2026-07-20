@@ -29,12 +29,31 @@ _DETECTION_TERMINAL = {
 }
 _DETECTION_TERMINAL_DEFAULT = ("BLOCKED", "UPSTREAM_BLOCKED")
 
+# 完整升级顺序：从轻到重。域名 preferred_mode 指定的是「起始层」，
+# 从该层截断到末尾即为该域名的升级链（如 stealth → 仅 L3，browser → L2+L3）。
+_ESCALATION_ORDER = ("http", "browser", "stealth")
+
 _MODE_LAYERS = {
-    "auto": ("http", "browser", "stealth"),
+    "auto": _ESCALATION_ORDER,
     "http": ("http",),
     "browser": ("browser",),
     "stealth": ("stealth",),
 }
+
+
+def _resolve_layers(request_mode: str, preferred_mode: str) -> tuple[str, ...]:
+    """决定实际抓取层链。
+
+    - 调用方显式指定 mode（http/browser/stealth）时优先，域名规则不覆盖。
+    - mode=auto 且域名 preferred_mode 指定了起始层时，从该层起截断升级链
+      （白名单直连 L3，避免从 L1 逐层升级带来的多次请求触发频率限制）。
+    - 否则沿用 auto 的完整升级链。
+    """
+    if request_mode != "auto":
+        return _MODE_LAYERS.get(request_mode, _MODE_LAYERS["auto"])
+    if preferred_mode in _ESCALATION_ORDER:
+        return _ESCALATION_ORDER[_ESCALATION_ORDER.index(preferred_mode):]
+    return _MODE_LAYERS["auto"]
 
 
 @dataclass(frozen=True)
@@ -143,7 +162,7 @@ class Orchestrator:
 
         domain = urlsplit(request.url).hostname or ""
         cache_key = compute_cache_key(
-            request.url, request.mode, request.include_images, self._locale, None
+            request.url, request.include_images, self._locale, None
         )
 
         if not request.force_refresh:
@@ -151,8 +170,8 @@ class Orchestrator:
             if cached is not None:
                 return self._outcome_from_cached(cached)
 
-        rule = await self._resolve_rule(domain)
-        layers = _MODE_LAYERS.get(request.mode, _MODE_LAYERS["auto"])
+        rule, preferred_mode = await self._resolve_rule(domain)
+        layers = _resolve_layers(request.mode, preferred_mode)
 
         last_error: FetchError | None = None
         last_verdict_reason: str | None = None
@@ -183,14 +202,15 @@ class Orchestrator:
             job_id, request, cache_key, last_verdict_reason, last_error
         )
 
-    async def _resolve_rule(self, domain: str) -> DomainRuleDefaults:
+    async def _resolve_rule(self, domain: str) -> tuple[DomainRuleDefaults, str]:
         record = await self._db.get_domain_rule(domain)
         if record is None:
-            return self._default_rule
-        return DomainRuleDefaults(
+            return self._default_rule, "auto"
+        defaults = DomainRuleDefaults(
             min_content_bytes=record.min_content_bytes,
             escalate_status_codes=tuple(record.escalate_status_codes or (403, 429, 503)),
         )
+        return defaults, record.preferred_mode or "auto"
 
     async def _finalize(
         self,

@@ -138,6 +138,22 @@ class Database:
             )
         return _row_to_domain_rule(row) if row else None
 
+    async def list_domain_rules(self) -> list[DomainRule]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"SELECT * FROM {_SCHEMA}.crawl_domain_rules ORDER BY domain"
+            )
+        return [_row_to_domain_rule(row) for row in rows]
+
+    async def delete_domain_rule(self, domain: str) -> bool:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"DELETE FROM {_SCHEMA}.crawl_domain_rules "
+                f"WHERE domain = $1 RETURNING domain",
+                domain,
+            )
+        return row is not None
+
     async def upsert_domain_rule(self, rule: DomainRule) -> None:
         escalate_status_codes = rule.escalate_status_codes or [403, 429, 503]
         async with self._pool.acquire() as conn:

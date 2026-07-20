@@ -98,6 +98,32 @@ async def test_get_domain_rule_returns_none_when_absent(db):
     assert await db.get_domain_rule("unknown.example.com") is None
 
 
+async def test_list_domain_rules_returns_all_sorted(db):
+    await db.upsert_domain_rule(DomainRule(domain="b.example.com", preferred_mode="stealth"))
+    await db.upsert_domain_rule(DomainRule(domain="a.example.com", preferred_mode="browser"))
+
+    rules = await db.list_domain_rules()
+
+    assert [r.domain for r in rules] == ["a.example.com", "b.example.com"]
+
+
+async def test_list_domain_rules_empty(db):
+    assert await db.list_domain_rules() == []
+
+
+async def test_delete_domain_rule_removes_and_reports(db):
+    await db.upsert_domain_rule(DomainRule(domain="shop.example.com", preferred_mode="stealth"))
+
+    deleted = await db.delete_domain_rule("shop.example.com")
+
+    assert deleted is True
+    assert await db.get_domain_rule("shop.example.com") is None
+
+
+async def test_delete_domain_rule_returns_false_when_absent(db):
+    assert await db.delete_domain_rule("missing.example.com") is False
+
+
 async def test_connect_with_bad_dsn_raises():
     from app.storage.database import Database
 
