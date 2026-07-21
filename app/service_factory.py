@@ -3,16 +3,19 @@ import tempfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from app.config import Settings
 from app.crawler.browser_fetcher import fetch_browser
 from app.crawler.browser_pool import BrowserPool
 from app.crawler.detector import DomainRuleDefaults
+from app.crawler.browser_login import close_browser_login, open_browser_login
 from app.crawler.http_fetcher import fetch_http
-from app.crawler.login_adapters.jd import JdLoginAdapter
-from app.crawler.login_adapters.taobao import TaobaoLoginAdapter
+from app.crawler.login_adapters.browser import (
+    JdBrowserLoginAdapter,
+    TaobaoBrowserLoginAdapter,
+)
 from app.crawler.login_manager import LoginManager
-from app.crawler.login_persist import persist_login_profile
 from app.crawler.orchestrator import Orchestrator
 from app.crawler.profile_manager import ProfileManager
 from app.crawler.stealth_fetcher import fetch_stealth
@@ -40,13 +43,13 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _build_login_infra(settings: Settings, database: Database):
+def _build_login_infra(settings: Settings, database: Database, playwright: Any):
     """构建登录态设施：ProfileManager（登录态抓取，加载 user_data_dir 起浏览器）
-    + LoginManager（扫码登录）。
+    + LoginManager（浏览器原生扫码登录，§16）。
 
-    仅当注入了加密主密钥时启用；否则返回 (None, None)，登录相关能力关闭。
+    仅当注入了加密主密钥且 playwright 就绪时启用；否则返回 (None, None)。
     """
-    if not settings.profile_encryption_key:
+    if not settings.profile_encryption_key or playwright is None:
         return None, None
 
     store = ProfileStore(
@@ -55,7 +58,7 @@ def _build_login_infra(settings: Settings, database: Database):
         key=settings.profile_encryption_key,
     )
 
-    # 抓取侧：加载 profile 的 user_data_dir → 起已登录的隐身浏览器（§16 BN3）。
+    # 抓取侧：加载 profile 的 user_data_dir → 起已登录的隐身浏览器（BN3）。
     async def profile_session_factory(work_dir):
         from scrapling.fetchers import AsyncStealthySession
 
@@ -71,29 +74,32 @@ def _build_login_infra(settings: Settings, database: Database):
         max_active_profiles=settings.max_active_profiles,
     )
 
-    # 登录侧：暂用 curl 协议式（BN4 将切换为浏览器原生登录）。
-    async def session_opener(domain: str):
-        from curl_cffi.requests import AsyncSession
+    # 登录侧：浏览器原生登录（在浏览器内完成 JS 终化，产出已登录 user_data_dir）。
+    login_tmp_root = Path(tempfile.gettempdir()) / "hermes-login"
 
-        return AsyncSession(impersonate="chrome")
+    async def browser_launcher(user_data_dir: str):
+        context = await playwright.chromium.launch_persistent_context(
+            user_data_dir=user_data_dir, headless=True,
+            viewport={"width": 1280, "height": 900},
+        )
+        page = context.pages[0] if context.pages else await context.new_page()
+        return context, page
+
+    async def session_opener(domain: str):
+        return await open_browser_login(
+            browser_launcher=browser_launcher,
+            tmp_root=login_tmp_root, id_factory=_new_login_id,
+        )
 
     async def session_closer(handle, *, success: bool, domain: str):
-        try:
-            if not success:
-                return None
-            cookies = handle.cookies.get_dict()
-            session_id = _new_session_id()
-            await persist_login_profile(
-                cookies=cookies, domain=domain, label=None,
-                store=store, db=database, session_id=session_id,
-                clock=_now, ttl_seconds=settings.profile_ttl_seconds,
-            )
-            return session_id
-        finally:
-            await handle.close()
+        return await close_browser_login(
+            handle, success=success, domain=domain,
+            store=store, db=database, session_id_factory=_new_session_id,
+            clock=_now, ttl_seconds=settings.profile_ttl_seconds,
+        )
 
     login_manager = LoginManager(
-        adapters=[JdLoginAdapter(), TaobaoLoginAdapter()],
+        adapters=[JdBrowserLoginAdapter(), TaobaoBrowserLoginAdapter()],
         session_opener=session_opener,
         session_closer=session_closer,
         clock=_now,
@@ -136,7 +142,12 @@ async def build_service(settings: Settings):
             url, timeout_seconds=timeout_seconds, validate=validate, cookies=cookies
         )
 
-    profile_manager, login_manager = _build_login_infra(settings, database)
+    playwright = None
+    if settings.profile_encryption_key:
+        from patchright.async_api import async_playwright
+
+        playwright = await async_playwright().start()
+    profile_manager, login_manager = _build_login_infra(settings, database, playwright)
 
     orchestrator = Orchestrator(
         db=database,
@@ -170,4 +181,6 @@ async def build_service(settings: Settings):
         yield service
     finally:
         await pool.close()
+        if playwright is not None:
+            await playwright.stop()
         await database.close()

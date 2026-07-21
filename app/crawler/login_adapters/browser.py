@@ -15,7 +15,8 @@ class _QrBrowserAdapter:
     _login_url_markers: tuple[str, ...] = ()
     _expired_selector: str | None = None
 
-    async def open_login(self, page) -> None:
+    async def open_login(self, page, url: str | None = None) -> None:
+        # 浏览器登录固定打开适配器的登录页；忽略调用方传入的 url。
         await page.goto(self.login_url, wait_until="domcontentloaded")
 
     async def capture_qr(self, page) -> bytes:
