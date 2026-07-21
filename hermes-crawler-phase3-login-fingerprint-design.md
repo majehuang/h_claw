@@ -408,8 +408,18 @@ class LoginAdapter(Protocol):
   - **适配器实现取向（DOM 观察式，推荐）**：让 JD 页自身 JS 跑轮询，`poll_status` 观察
     DOM/URL —— 成功=已跳离登录页/出现登录态、过期=`#J-qrcoderror` 去 `hide`、否则 PENDING。
     需要一个**活的登录页**持续跑 JD 轮询 JS（即 ProfileManager「开/持有/关」扩展）。
-  - **待验（需真机扫码，属 S4）**：SCANNED/SUCCESS 的确切 DOM/URL 迁移。
-- **S4 ⏳**：需真人扫码 + 重启复用验收，未做。
+  - **S2/S4 已真机验证 ✅（协议式，非 DOM）**：真人扫码跑通完整信号链——
+    `check` 返回 `code=201`（未扫）→ `code=202`「请手机客户端确认登录」（已扫待确认）
+    → `code=200`（成功，返回 `ticket`）；再 `GET passport.jd.com/uc/qrCodeTicketValidation?t=<ticket>`
+    换登录态，之后抓登录墙商品页 `item.jd.com/...` **不再跳登录、返回完整 35KB 内容**。
+  - **实现取向修正为协议式**（比 DOM 观察式更简单、且绕开"活页面持有"未知项）：
+    `show`（QR+`wlfstk_smdl`）→ 轮询 `check`（201/202/200）→ `qrCodeTicketValidation`
+    换 `pt_key`/`pt_pin` 登录 cookie。cookie 读取用 curl_cffi `session.cookies.get_dict()`。
+  - **JdLoginAdapter 落地要点**：用一个持 cookie 的 HTTP 会话实现 `capture_qr`（取 `show` 图）
+    与 `poll_status`（解析 `check` 的 code），成功后把 `pt_key`/`pt_pin` 交给 ProfileManager
+    加密持久化——无需浏览器持有活页面。
+- **S4 ✅**：真机扫码 + ticket 换登录态已验证；「重启复用登录 cookie 抓登录墙页」待接入
+  ProfileManager 持久化后端到端验收。
 
 ---
 
