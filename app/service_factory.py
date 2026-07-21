@@ -125,21 +125,21 @@ async def build_service(settings: Settings):
     pool = BrowserPool(max_browser_pages=settings.max_browser_pages)
     await pool.start()
 
-    async def browser_fetch(url, *, timeout_seconds, validate, session=None, cookies=None):
+    async def browser_fetch(url, *, timeout_seconds, validate, session=None):
         return await fetch_browser(
             url, pool=pool, timeout_seconds=timeout_seconds,
-            validate=validate, session=session, cookies=cookies,
+            validate=validate, session=session,
         )
 
-    async def stealth_fetch(url, *, timeout_seconds, validate, session=None, cookies=None):
+    async def stealth_fetch(url, *, timeout_seconds, validate, session=None):
         return await fetch_stealth(
             url, pool=pool, timeout_seconds=timeout_seconds,
-            validate=validate, session=session, cookies=cookies,
+            validate=validate, session=session,
         )
 
-    async def http_fetch(url, *, timeout_seconds, validate, session=None, cookies=None):
+    async def http_fetch(url, *, timeout_seconds, validate, session=None):
         return await fetch_http(
-            url, timeout_seconds=timeout_seconds, validate=validate, cookies=cookies
+            url, timeout_seconds=timeout_seconds, validate=validate
         )
 
     playwright = None
