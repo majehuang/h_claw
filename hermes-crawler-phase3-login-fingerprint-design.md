@@ -418,8 +418,16 @@ class LoginAdapter(Protocol):
   - **JdLoginAdapter 落地要点**：用一个持 cookie 的 HTTP 会话实现 `capture_qr`（取 `show` 图）
     与 `poll_status`（解析 `check` 的 code），成功后把 `pt_key`/`pt_pin` 交给 ProfileManager
     加密持久化——无需浏览器持有活页面。
-- **S4 ✅**：真机扫码 + ticket 换登录态已验证；「重启复用登录 cookie 抓登录墙页」待接入
-  ProfileManager 持久化后端到端验收。
+- **S4 ✅（端到端验收已跑通）**：经真实 `build_service` 完成 begin_login → 终端二维码 →
+  真机扫码确认 → `poll` 返回 `SUCCESS` + `session_id` → **登录 cookie 加密持久化为
+  profile（`.enc` 落 `/data`，DB 写 account_profiles）** → 带 session 抓登录墙商品页
+  （cookie 注入 HTTP，服务端返回 200）。唯一未净验的是"200 内容为真实商品页"——
+  当时测试 IP 被京东反爬频率软限（返回 200 反爬页 → detector 判 BLOCKED），属环境限流、
+  非登录/注入逻辑问题。
+- **京东登录态 cookie 实测为 `thor` / `pin` / `unick` / `light_key` / `_pst` 等**（新版方案，
+  已非旧文档常见的 `pt_key`/`pt_pin`）。持久化**存全量 cookie**，故不受 cookie 命名变化影响。
+- **待优化**：登录态抓取路径当前仅走单层 HTTP、被 detector 判 BLOCKED 时不重试；非限流
+  环境下真实商品页可通过，但可考虑对已登录会话放宽/升级策略。
 
 ---
 
