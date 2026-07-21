@@ -109,14 +109,11 @@ class Orchestrator:
         browser_timeout_seconds: int = 60,
         stealth_timeout_seconds: int = 90,
         locale: str = "zh-CN",
-        cookies_loader: Callable[[str], dict[str, str]] | None = None,
-        authenticated_fetch: Fetcher | None = None,
+        profile_manager: Any = None,
     ):
         self._db = db
-        # 登录态 profile 的 cookie 加载器（session_id -> cookies dict）。
-        self._cookies_loader = cookies_loader
-        # 带登录 cookie 的隐身浏览器抓取（会话级注入，导航前生效）。
-        self._authenticated_fetch = authenticated_fetch
+        # 登录态 profile 管理器：加载已登录的持久上下文（user_data_dir）起浏览器抓取。
+        self._profile_manager = profile_manager
         self._data_dir = data_dir
         self._fetchers: dict[str, Fetcher] = {
             "http": http_fetch,
@@ -235,10 +232,10 @@ class Orchestrator:
         cache_key: str,
         rule: DomainRuleDefaults,
     ) -> CrawlOutcome:
-        """带登录态 profile 的抓取：加载 profile 的登录 cookie，会话级注入 stealth
-        浏览器抓取（第 14.1 节：JD 等商品页由 JS 渲染，需浏览器执行 JS + 登录 cookie
-        才能取到真实内容；cookie 必须在导航前注入到浏览器上下文，故用会话级注入）。"""
-        if self._cookies_loader is None or self._authenticated_fetch is None:
+        """带登录态 profile 的抓取：经 ProfileManager 加载已登录的持久上下文
+        （user_data_dir），用该上下文起隐身浏览器抓取（浏览器天然已登录，JS 渲染的
+        商品页可取到真实内容）。见 §16 浏览器原生登录方案。"""
+        if self._profile_manager is None:
             return self._simple_error(
                 job_id, request, "SESSION_NOT_FOUND", "Profile 功能未启用。"
             )
@@ -253,29 +250,33 @@ class Orchestrator:
                 job_id, request, "SESSION_EXPIRED", "登录态已失效，请重新登录。"
             )
 
-        cookies = self._cookies_loader(session_id)
-        try:
-            response = await self._authenticated_fetch(
-                request.url,
-                timeout_seconds=self._layer_timeouts["stealth"],
-                validate=self._validate,
-                cookies=cookies,
-            )
-        except FetchError as exc:
-            if exc.error_code in _IMMEDIATE_TERMINAL_ERRORS:
-                outcome = self._fetch_error_outcome(job_id, request, exc.error_code, str(exc))
-            else:
-                outcome = await self._terminal_outcome(job_id, request, cache_key, None, exc)
-        else:
-            verdict = detect(response, rule)
-            if verdict.ok:
-                outcome = await self._finalize(
-                    job_id, request, response, "stealth", cache_key
+        async with self._profile_manager.use(session_id) as browser_session:
+            try:
+                response = await self._fetchers["stealth"](
+                    request.url,
+                    timeout_seconds=self._layer_timeouts["stealth"],
+                    validate=self._validate,
+                    session=browser_session,
                 )
+            except FetchError as exc:
+                if exc.error_code in _IMMEDIATE_TERMINAL_ERRORS:
+                    outcome = self._fetch_error_outcome(
+                        job_id, request, exc.error_code, str(exc)
+                    )
+                else:
+                    outcome = await self._terminal_outcome(
+                        job_id, request, cache_key, None, exc
+                    )
             else:
-                outcome = await self._terminal_outcome(
-                    job_id, request, cache_key, verdict.reason, None
-                )
+                verdict = detect(response, rule)
+                if verdict.ok:
+                    outcome = await self._finalize(
+                        job_id, request, response, "stealth", cache_key
+                    )
+                else:
+                    outcome = await self._terminal_outcome(
+                        job_id, request, cache_key, verdict.reason, None
+                    )
         await self._db.touch_profile_last_used(session_id, self._clock())
         return outcome
 

@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -73,23 +74,19 @@ def _profile(status="ACTIVE", expires_at=None):
     )
 
 
-class FakeAuthFetcher:
-    def __init__(self, result):
-        self.result = result
-        self.calls: list[str] = []
-        self.cookies: list = []
+class FakeProfileManager:
+    def __init__(self, session_obj="profile-session"):
+        self._session_obj = session_obj
+        self.used: list[str] = []
 
-    async def __call__(self, url, **kwargs):
-        self.calls.append(url)
-        self.cookies.append(kwargs.get("cookies"))
-        if isinstance(self.result, Exception):
-            raise self.result
-        return self.result
+    @asynccontextmanager
+    async def use(self, session_id):
+        self.used.append(session_id)
+        yield self._session_obj
 
 
 def _orchestrator(tmp_path, *, db=None, http=None, browser=None, stealth=None,
-                  validate=None, max_concurrency=5, cookies_loader=None,
-                  authenticated_fetch=None):
+                  validate=None, max_concurrency=5, profile_manager=None):
     return Orchestrator(
         db=db or FakeDB(),
         data_dir=tmp_path,
@@ -103,8 +100,7 @@ def _orchestrator(tmp_path, *, db=None, http=None, browser=None, stealth=None,
         cache_ttl_seconds=900,
         result_ttl_seconds=86400,
         max_concurrency=max_concurrency,
-        cookies_loader=cookies_loader,
-        authenticated_fetch=authenticated_fetch,
+        profile_manager=profile_manager,
     )
 
 
@@ -329,14 +325,11 @@ async def test_domain_preferred_auto_uses_full_escalation(tmp_path):
     assert browser.calls == []
 
 
-async def test_session_id_routes_through_authenticated_fetch(tmp_path):
+async def test_session_id_routes_through_profile_browser(tmp_path):
     stealth = FakeFetcher(_resp())
-    auth = FakeAuthFetcher(_resp())
+    pm = FakeProfileManager(session_obj="jd-browser")
     db = FakeDB(profile=_profile())
-    loader = lambda sid: {"pt_key": "abc", "pin": "user"}  # noqa: E731
-    orch = _orchestrator(
-        tmp_path, db=db, stealth=stealth, cookies_loader=loader, authenticated_fetch=auth
-    )
+    orch = _orchestrator(tmp_path, db=db, stealth=stealth, profile_manager=pm)
 
     outcome = await orch.crawl(
         CrawlRequest(url="https://www.jd.com/p/1", session_id="jd-user")
@@ -344,17 +337,17 @@ async def test_session_id_routes_through_authenticated_fetch(tmp_path):
 
     assert outcome.status == "SUCCESS"
     assert outcome.fetch_mode == "stealth"
-    assert stealth.calls == []                       # 不走无状态池，走会话级注入
-    assert auth.calls == ["https://www.jd.com/p/1"]
-    assert auth.cookies == [{"pt_key": "abc", "pin": "user"}]  # 登录 cookie 注入
+    assert pm.used == ["jd-user"]                    # 经 ProfileManager 加载已登录上下文
+    assert stealth.calls == ["https://www.jd.com/p/1"]
+    assert stealth.sessions == ["jd-browser"]        # 用该 profile 的浏览器会话抓取
     assert db.touched == [("jd-user", datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc))]
 
 
 async def test_session_id_unknown_profile_returns_session_not_found(tmp_path):
-    auth = FakeAuthFetcher(_resp())
+    stealth = FakeFetcher(_resp())
     orch = _orchestrator(
-        tmp_path, db=FakeDB(profile=None), cookies_loader=lambda s: {},
-        authenticated_fetch=auth,
+        tmp_path, db=FakeDB(profile=None), stealth=stealth,
+        profile_manager=FakeProfileManager(),
     )
 
     outcome = await orch.crawl(
@@ -363,14 +356,14 @@ async def test_session_id_unknown_profile_returns_session_not_found(tmp_path):
 
     assert outcome.status == "FAILED"
     assert outcome.error_code == "SESSION_NOT_FOUND"
-    assert auth.calls == []
+    assert stealth.calls == []
 
 
 async def test_session_id_revoked_returns_session_expired(tmp_path):
-    auth = FakeAuthFetcher(_resp())
+    stealth = FakeFetcher(_resp())
     orch = _orchestrator(
         tmp_path, db=FakeDB(profile=_profile(status="REVOKED")),
-        cookies_loader=lambda s: {}, authenticated_fetch=auth,
+        stealth=stealth, profile_manager=FakeProfileManager(),
     )
 
     outcome = await orch.crawl(
@@ -378,15 +371,15 @@ async def test_session_id_revoked_returns_session_expired(tmp_path):
     )
 
     assert outcome.error_code == "SESSION_EXPIRED"
-    assert auth.calls == []
+    assert stealth.calls == []
 
 
 async def test_session_id_expired_profile_returns_session_expired(tmp_path):
     past = datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc) - timedelta(days=1)
-    auth = FakeAuthFetcher(_resp())
+    stealth = FakeFetcher(_resp())
     orch = _orchestrator(
         tmp_path, db=FakeDB(profile=_profile(expires_at=past)),
-        cookies_loader=lambda s: {}, authenticated_fetch=auth,
+        stealth=stealth, profile_manager=FakeProfileManager(),
     )
 
     outcome = await orch.crawl(
@@ -394,24 +387,23 @@ async def test_session_id_expired_profile_returns_session_expired(tmp_path):
     )
 
     assert outcome.error_code == "SESSION_EXPIRED"
-    assert auth.calls == []
+    assert stealth.calls == []
 
 
 async def test_domain_default_session_id_used_when_request_has_none(tmp_path):
     from app.storage.database import DomainRule
 
-    auth = FakeAuthFetcher(_resp())
+    stealth = FakeFetcher(_resp())
+    pm = FakeProfileManager(session_obj="jd-browser")
     rule = DomainRule(domain="www.jd.com", default_session_id="jd-user")
     db = FakeDB(domain_rule=rule, profile=_profile())
-    orch = _orchestrator(
-        tmp_path, db=db, cookies_loader=lambda s: {"pt_key": "x"},
-        authenticated_fetch=auth,
-    )
+    orch = _orchestrator(tmp_path, db=db, stealth=stealth, profile_manager=pm)
 
     outcome = await orch.crawl(CrawlRequest(url="https://www.jd.com/p/1"))
 
     assert outcome.status == "SUCCESS"
-    assert auth.cookies == [{"pt_key": "x"}]
+    assert pm.used == ["jd-user"]
+    assert stealth.sessions == ["jd-browser"]
 
 
 async def test_cache_hit_returns_cached_without_fetching(tmp_path):

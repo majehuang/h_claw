@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.config import Settings
-from app.crawler.browser_fetch_common import _to_browser_cookies, fetch_via_browser
 from app.crawler.browser_fetcher import fetch_browser
 from app.crawler.browser_pool import BrowserPool
 from app.crawler.detector import DomainRuleDefaults
@@ -13,8 +12,9 @@ from app.crawler.http_fetcher import fetch_http
 from app.crawler.login_adapters.jd import JdLoginAdapter
 from app.crawler.login_adapters.taobao import TaobaoLoginAdapter
 from app.crawler.login_manager import LoginManager
-from app.crawler.login_persist import load_profile_cookies, persist_login_profile
+from app.crawler.login_persist import persist_login_profile
 from app.crawler.orchestrator import Orchestrator
+from app.crawler.profile_manager import ProfileManager
 from app.crawler.stealth_fetcher import fetch_stealth
 from app.security.url_validator import validate_public_http_url
 from app.storage.database import Database
@@ -41,7 +41,8 @@ def _now() -> datetime:
 
 
 def _build_login_infra(settings: Settings, database: Database):
-    """构建登录态设施：cookie 加载器 + LoginManager（扫码登录）。
+    """构建登录态设施：ProfileManager（登录态抓取，加载 user_data_dir 起浏览器）
+    + LoginManager（扫码登录）。
 
     仅当注入了加密主密钥时启用；否则返回 (None, None)，登录相关能力关闭。
     """
@@ -54,9 +55,23 @@ def _build_login_infra(settings: Settings, database: Database):
         key=settings.profile_encryption_key,
     )
 
-    def cookies_loader(session_id: str) -> dict[str, str]:
-        return load_profile_cookies(store, session_id)
+    # 抓取侧：加载 profile 的 user_data_dir → 起已登录的隐身浏览器（§16 BN3）。
+    async def profile_session_factory(work_dir):
+        from scrapling.fetchers import AsyncStealthySession
 
+        session = AsyncStealthySession(
+            max_pages=1, headless=True, user_data_dir=str(work_dir)
+        )
+        await session.start()
+        return session
+
+    profile_manager = ProfileManager(
+        store=store,
+        session_factory=profile_session_factory,
+        max_active_profiles=settings.max_active_profiles,
+    )
+
+    # 登录侧：暂用 curl 协议式（BN4 将切换为浏览器原生登录）。
     async def session_opener(domain: str):
         from curl_cffi.requests import AsyncSession
 
@@ -85,7 +100,7 @@ def _build_login_infra(settings: Settings, database: Database):
         id_factory=_new_login_id,
         ttl_seconds=_LOGIN_TTL_SECONDS,
     )
-    return cookies_loader, login_manager
+    return profile_manager, login_manager
 
 
 @asynccontextmanager
@@ -121,29 +136,7 @@ async def build_service(settings: Settings):
             url, timeout_seconds=timeout_seconds, validate=validate, cookies=cookies
         )
 
-    async def authenticated_fetch(url, *, timeout_seconds, validate, cookies):
-        # 登录 cookie 必须在导航前注入浏览器上下文 → 用会话级 cookies 构造隐身会话
-        # （per-fetch cookies 在导航后才生效，会被登录墙拦下）。
-        from scrapling.fetchers import AsyncStealthySession
-
-        browser_cookies = _to_browser_cookies(cookies or {}, url)
-        session = AsyncStealthySession(
-            max_pages=1, headless=True, cookies=browser_cookies
-        )
-        await session.start()
-        try:
-            return await fetch_via_browser(
-                url,
-                pool_fetch=None,
-                timeout_seconds=timeout_seconds,
-                validate=validate,
-                extra_kwargs={"solve_cloudflare": True, "retries": 1},
-                session=session,
-            )
-        finally:
-            await session.close()
-
-    cookies_loader, login_manager = _build_login_infra(settings, database)
+    profile_manager, login_manager = _build_login_infra(settings, database)
 
     orchestrator = Orchestrator(
         db=database,
@@ -161,8 +154,7 @@ async def build_service(settings: Settings):
         http_timeout_seconds=settings.http_timeout_seconds,
         browser_timeout_seconds=settings.browser_timeout_seconds,
         stealth_timeout_seconds=settings.stealth_timeout_seconds,
-        cookies_loader=cookies_loader,
-        authenticated_fetch=authenticated_fetch,
+        profile_manager=profile_manager,
     )
 
     service = Service(
