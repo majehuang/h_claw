@@ -34,6 +34,19 @@ class _Handler(BaseHTTPRequestHandler):
         elif self.path == "/forbidden":
             self.send_response(403)
             self.end_headers()
+        elif self.path == "/set-cookie":
+            # 持久 cookie（带 Max-Age）才会被 chromium 写入 user_data_dir 落盘。
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Set-Cookie", "profile_test=persisted123; Max-Age=3600; Path=/")
+            self.end_headers()
+            self.wfile.write(b"<html><body>cookie set</body></html>")
+        elif self.path == "/show-cookie":
+            cookie = self.headers.get("Cookie", "")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(f"<html><body>cookie={cookie}</body></html>".encode())
         else:
             self.send_response(404)
             self.end_headers()
