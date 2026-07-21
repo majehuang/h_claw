@@ -10,6 +10,8 @@ _T0 = datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc)
 
 
 class FakeAdapter:
+    domain_patterns = ("jd.com",)
+
     def __init__(self, statuses=None):
         self._statuses = list(statuses or [])
         self.opened_url = None
@@ -45,7 +47,7 @@ def _manager(adapter, *, clock=None, ttl=180):
         return "new-session-id" if success else None
 
     mgr = LoginManager(
-        adapters={"www.jd.com": adapter},
+        adapters=[adapter],
         session_opener=opener,
         session_closer=closer,
         clock=clock or Clock(_T0),
@@ -59,7 +61,7 @@ async def test_begin_opens_login_and_returns_qr():
     adapter = FakeAdapter()
     mgr, opened, _ = _manager(adapter)
 
-    login = await mgr.begin("https://www.jd.com/login", "www.jd.com")
+    login = await mgr.begin("https://www.jd.com/login")
 
     assert login.login_id == "lg_test"
     assert login.status == LoginState.QR_READY
@@ -70,7 +72,7 @@ async def test_begin_opens_login_and_returns_qr():
 
 async def test_poll_pending_stays_qr_ready():
     mgr, _, _ = _manager(FakeAdapter(statuses=["PENDING"]))
-    await mgr.begin("https://www.jd.com/login", "www.jd.com")
+    await mgr.begin("https://www.jd.com/login")
 
     login = await mgr.poll("lg_test")
     assert login.status == LoginState.QR_READY
@@ -78,14 +80,14 @@ async def test_poll_pending_stays_qr_ready():
 
 async def test_poll_scanned():
     mgr, _, _ = _manager(FakeAdapter(statuses=["SCANNED"]))
-    await mgr.begin("https://www.jd.com/login", "www.jd.com")
+    await mgr.begin("https://www.jd.com/login")
 
     assert (await mgr.poll("lg_test")).status == LoginState.SCANNED
 
 
 async def test_poll_success_seals_and_returns_session_id():
     mgr, _, closed = _manager(FakeAdapter(statuses=["SUCCESS"]))
-    await mgr.begin("https://www.jd.com/login", "www.jd.com")
+    await mgr.begin("https://www.jd.com/login")
 
     login = await mgr.poll("lg_test")
 
@@ -98,7 +100,7 @@ async def test_poll_success_seals_and_returns_session_id():
 async def test_poll_expires_after_ttl():
     clock = Clock(_T0)
     mgr, _, closed = _manager(FakeAdapter(statuses=["PENDING"]), clock=clock, ttl=180)
-    await mgr.begin("https://www.jd.com/login", "www.jd.com")
+    await mgr.begin("https://www.jd.com/login")
 
     clock.now = _T0 + timedelta(seconds=181)
     login = await mgr.poll("lg_test")
@@ -110,7 +112,7 @@ async def test_poll_expires_after_ttl():
 
 async def test_cancel_closes_and_returns_true():
     mgr, _, closed = _manager(FakeAdapter())
-    await mgr.begin("https://www.jd.com/login", "www.jd.com")
+    await mgr.begin("https://www.jd.com/login")
 
     assert await mgr.cancel("lg_test") is True
     assert closed == [(closed[0][0], False)]

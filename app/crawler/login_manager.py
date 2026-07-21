@@ -11,6 +11,15 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
+from urllib.parse import urlsplit
+
+from app.crawler.login_adapters.base import select_adapter
+
+
+class LoginError(Exception):
+    def __init__(self, error_code: str, message: str):
+        super().__init__(message)
+        self.error_code = error_code
 
 
 class LoginState:
@@ -58,14 +67,14 @@ class LoginManager:
     def __init__(
         self,
         *,
-        adapters: dict[str, Any],
+        adapters: list[Any],
         session_opener: SessionOpener,
         session_closer: SessionCloser,
         clock: Callable[[], datetime],
         id_factory: Callable[[], str],
         ttl_seconds: int,
     ):
-        self._adapters = adapters
+        self._adapters = list(adapters)
         self._open = session_opener
         self._close = session_closer
         self._clock = clock
@@ -73,8 +82,11 @@ class LoginManager:
         self._ttl = ttl_seconds
         self._entries: dict[str, _Entry] = {}
 
-    async def begin(self, url: str, domain: str) -> LoginSession:
-        adapter = self._adapters[domain]
+    async def begin(self, url: str) -> LoginSession:
+        domain = urlsplit(url).hostname or ""
+        adapter = select_adapter(self._adapters, domain)
+        if adapter is None:
+            raise LoginError("LOGIN_INIT_FAILED", f"没有适配 {domain} 的登录适配器。")
         handle = await self._open(domain)
         await adapter.open_login(handle, url)
         qr = await adapter.capture_qr(handle)
