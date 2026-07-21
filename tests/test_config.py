@@ -56,9 +56,16 @@ def test_profile_defaults(monkeypatch):
     settings = Settings(_env_file=None)
 
     assert settings.profile_encryption_key is None
-    assert settings.profiles_dir == Path("/data/profiles")
+    assert settings.profiles_dir == Path("/data/profiles")  # 跟随默认 data_dir=/data
     assert settings.profile_ttl_seconds == 2592000  # 30 天
     assert settings.max_active_profiles == 2
+
+
+def test_profiles_dir_follows_data_dir(monkeypatch):
+    monkeypatch.setenv("DATA_DIR", "/srv/mydata")
+    monkeypatch.delenv("PROFILES_DIR", raising=False)
+    settings = Settings(_env_file=None)
+    assert settings.profiles_dir == Path("/srv/mydata/profiles")
 
 
 def test_profile_env_overrides(monkeypatch):
