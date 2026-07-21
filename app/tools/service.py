@@ -12,3 +12,4 @@ class Service:
     data_dir: Path
     inline_limit_bytes: int
     max_markdown_bytes: int
+    login_manager: Any = None

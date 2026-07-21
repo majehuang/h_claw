@@ -12,6 +12,7 @@ from app.observability.logging import setup_logging
 from app.observability.metrics import Metrics, render_prometheus
 from app.service_factory import build_service
 from app.tools.crawl_url import crawl_url_impl
+from app.tools.login import begin_login_impl, cancel_login_impl, poll_login_impl
 from app.tools.read_result import read_result_impl
 from app.tools.service import Service
 
@@ -79,6 +80,26 @@ async def read_crawl_result(
     return await read_result_impl(
         get_service(), job_id=job_id, offset=offset, max_chars=max_chars
     )
+
+
+@mcp.tool(
+    description=(
+        "对需要登录的站点（如京东/淘宝）发起扫码登录，返回二维码（base64）与 login_id，"
+        "供用户在客户端扫码。二维码由服务端从官方登录页实时截取。"
+    )
+)
+async def begin_login(url: str) -> dict[str, Any]:
+    return await begin_login_impl(get_service(), url=url)
+
+
+@mcp.tool(description="轮询扫码登录状态；成功后返回可用于 crawl_url 的 session_id。")
+async def poll_login(login_id: str) -> dict[str, Any]:
+    return await poll_login_impl(get_service(), login_id=login_id)
+
+
+@mcp.tool(description="取消一个进行中的扫码登录，释放其浏览器资源。")
+async def cancel_login(login_id: str) -> dict[str, Any]:
+    return await cancel_login_impl(get_service(), login_id=login_id)
 
 
 @mcp.custom_route("/healthz", methods=["GET"])
