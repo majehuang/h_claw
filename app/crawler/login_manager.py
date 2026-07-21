@@ -1,0 +1,132 @@
+"""扫码登录的在途会话状态机与注册表（Phase 3b / M-P3-3）。
+
+MCP 一问一答，而扫码是几十秒的异步过程，故拆成 begin/poll/cancel（见设计
+§5.1–§5.3）：begin 打开登录页并抓二维码、把活的登录会话挂入注册表；poll 驱动
+站点适配器读取扫码状态；成功则回写密文并返回可复用的 `session_id`。
+
+持有「活的登录浏览器会话」这类有状态资源经注入的 `session_opener` /
+`session_closer` 抽象，便于单测与后续接入 ProfileManager。
+"""
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
+from typing import Any
+
+
+class LoginState:
+    CREATED = "CREATED"
+    QR_READY = "QR_READY"
+    SCANNED = "SCANNED"
+    SUCCESS = "SUCCESS"
+    EXPIRED = "EXPIRED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+# 适配器 poll_status 原始信号 → 状态机状态。
+_STATUS_MAP = {
+    "PENDING": LoginState.QR_READY,
+    "SCANNED": LoginState.SCANNED,
+    "SUCCESS": LoginState.SUCCESS,
+    "EXPIRED": LoginState.EXPIRED,
+}
+
+
+@dataclass(frozen=True)
+class LoginSession:
+    login_id: str
+    domain: str
+    status: str
+    qr_png: bytes | None = None
+    session_id: str | None = None
+    created_at: datetime | None = None
+    expires_at: datetime | None = None
+
+
+@dataclass
+class _Entry:
+    login: LoginSession
+    handle: Any
+    adapter: Any
+
+
+SessionOpener = Callable[[str], Awaitable[Any]]
+SessionCloser = Callable[..., Awaitable[str | None]]
+
+
+class LoginManager:
+    def __init__(
+        self,
+        *,
+        adapters: dict[str, Any],
+        session_opener: SessionOpener,
+        session_closer: SessionCloser,
+        clock: Callable[[], datetime],
+        id_factory: Callable[[], str],
+        ttl_seconds: int,
+    ):
+        self._adapters = adapters
+        self._open = session_opener
+        self._close = session_closer
+        self._clock = clock
+        self._id_factory = id_factory
+        self._ttl = ttl_seconds
+        self._entries: dict[str, _Entry] = {}
+
+    async def begin(self, url: str, domain: str) -> LoginSession:
+        adapter = self._adapters[domain]
+        handle = await self._open(domain)
+        await adapter.open_login(handle, url)
+        qr = await adapter.capture_qr(handle)
+
+        now = self._clock()
+        login = LoginSession(
+            login_id=self._id_factory(),
+            domain=domain,
+            status=LoginState.QR_READY,
+            qr_png=qr,
+            created_at=now,
+            expires_at=now + timedelta(seconds=self._ttl),
+        )
+        self._entries[login.login_id] = _Entry(login=login, handle=handle, adapter=adapter)
+        return login
+
+    async def poll(self, login_id: str) -> LoginSession | None:
+        entry = self._entries.get(login_id)
+        if entry is None:
+            return None
+
+        if entry.login.expires_at is not None and self._clock() >= entry.login.expires_at:
+            return await self._finish(login_id, entry, LoginState.EXPIRED)
+
+        raw = await entry.adapter.poll_status(entry.handle)
+        status = _STATUS_MAP.get(raw, LoginState.QR_READY)
+
+        if status == LoginState.SUCCESS:
+            return await self._finish(login_id, entry, LoginState.SUCCESS)
+        if status == LoginState.EXPIRED:
+            return await self._finish(login_id, entry, LoginState.EXPIRED)
+
+        entry.login = replace(entry.login, status=status)
+        return entry.login
+
+    async def cancel(self, login_id: str) -> bool:
+        entry = self._entries.get(login_id)
+        if entry is None:
+            return False
+        await self._finish(login_id, entry, LoginState.CANCELLED)
+        return True
+
+    async def _finish(
+        self, login_id: str, entry: _Entry, status: str
+    ) -> LoginSession:
+        success = status == LoginState.SUCCESS
+        session_id = await self._close(entry.handle, success=success)
+        final = replace(
+            entry.login,
+            status=status,
+            session_id=session_id if success else None,
+            qr_png=None,
+        )
+        self._entries.pop(login_id, None)
+        return final
