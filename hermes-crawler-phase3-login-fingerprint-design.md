@@ -438,6 +438,23 @@ class LoginAdapter(Protocol):
     `.jd.com`）。
   - **真机验证通过**：拿到真实商品页（PINKO 连衣裙,881KB,含 title 与「加入购物车」），
     而非登录墙。
+- **JD 登录态跨站/复用真机验证 ✅**：一次登录后,同一 `session_id` **复用持久化 cookie** 抓
+  `npcitem.jd.hk`（京东国际）成功,两次抓取均 SUCCESS;passport.**jd.com** 登录 → **jd.hk**
+  抓取,cookie 域改写到 `.jd.hk` 后照样认。即"登录一次、多次/跨 jd 子站复用"成立。
+- **淘宝/天猫：TaobaoLoginAdapter 交付,但 cookie 复用抓商品页受风控所限 ⚠️**：
+  - 协议 spike + 真机验证:`generateQRCode4Login`→`lgToken`+二维码,轮询 `qrcodeLoginCheck`
+    code `10000`未扫/`10001`已扫/`10006`成功(带完成登录 url)/`10004`失效;扫码登录**完整
+    可用**(SCANNED→SUCCESS,捕获 `_tb_token_`/`cookie2`/`unb`/`sgcookie` 等)。
+  - **但带 cookie 抓商品页失败**:`detail.tmall.com`（跨域）与 `item.taobao.com`（**同域**）
+    **都被重定向到 `login.taobao.com/havanaone/login`**。把 cookie 同时设到 `.taobao.com`+
+    `.tmall.com` 也一样跳 → **不是域问题**。
+  - **根因(与 JD 的本质区别)**:淘宝会话**绑定登录客户端(设备指纹/umid/风控)**。经
+    curl_cffi(HTTP)登录拿到的 cookie,换到 stealth 浏览器(指纹不同)重放被风控拒绝;
+    只捕获到 6 个 cookie(JD 有 16),会话也可能未完全建立。JD 对跨客户端 cookie 复用宽松,
+    淘宝不宽松。
+  - **要真正抓淘宝/天猫登录商品页,需换"浏览器原生登录"**(登录在 stealth 浏览器内完成,
+    用其自身指纹建立会话,而非 curl 登录后重放),这需要解决"浏览器持有活登录页跨轮询",
+    且天猫商品页另有滑块反爬,是更大的工程,列为后续项。
 
 ---
 
