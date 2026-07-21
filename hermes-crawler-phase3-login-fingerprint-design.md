@@ -390,6 +390,27 @@ class LoginAdapter(Protocol):
 - S3：只读 rootfs + tmpfs 下，浏览器以 tmpfs `user_data_dir` 启动、退出时加密回写 `/data` 的完整链路（§4.2）。
 - S4：登录成功后 cookie + 指纹重载，能否稳定通过京东风控继续抓取（验证 §2 的捆绑假设）。
 
+### 14.1 Spike 结果
+
+- **S1 ✅**（A3 已验证）：`AsyncStealthySession(user_data_dir=...)` 默认走
+  `launch_persistent_context`，cookie/localStorage 落 `user_data_dir`；指纹稳定靠固定目录 +
+  钉住 `timezone_id`/`locale` 等（无 Camoufox 式指纹种子）。
+- **S3 ✅**（A3 集成测已验证）：持久 cookie 经「浏览器→加密落 `/data`→解密重载」仍随请求发出。
+- **S2 部分 ✅**（登录页可正常打开，status 200，未被反爬拦）：
+  - 登录页：`https://passport.jd.com/new/login.aspx`。
+  - **二维码元素**：`<img id="passport-main-qrcode-img" src="//qr.m.jd.com/show?appid=133&size=147&t=<ms>">`
+    —— 真实 `<img>`（非 canvas）。`capture_qr` 可**截该元素**或取其 src 图片字节。
+  - 容器：`.qrcode-img-warp` / `.qrcode-img`；**过期标记**：`#J-qrcoderror`（class 含 `hide`，
+    过期时去掉 `hide`）。
+  - **状态轮询**：JD 在压缩 JS 内轮询 `qr.m.jd.com/check`，token 走 `wlfstk_smdl` cookie；
+    静态 HTML 取不到。按 JD 公开 QR 协议：`code=201` 未扫、`200` 成功（返回 `ticket`，再
+    `passport.jd.com/uc/qrCodeTicketValidation?t=<ticket>` 换登录 cookie）、`203` 失效。
+  - **适配器实现取向（DOM 观察式，推荐）**：让 JD 页自身 JS 跑轮询，`poll_status` 观察
+    DOM/URL —— 成功=已跳离登录页/出现登录态、过期=`#J-qrcoderror` 去 `hide`、否则 PENDING。
+    需要一个**活的登录页**持续跑 JD 轮询 JS（即 ProfileManager「开/持有/关」扩展）。
+  - **待验（需真机扫码，属 S4）**：SCANNED/SUCCESS 的确切 DOM/URL 迁移。
+- **S4 ⏳**：需真人扫码 + 重启复用验收，未做。
+
 ---
 
 ## 15. 开发计划（TDD，按可自闭环模块）
