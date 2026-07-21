@@ -16,6 +16,11 @@ _SENSITIVE_KEYS = frozenset(
         "token",
         "account",
         "session_id",
+        # Phase 3b 登录/加密敏感字段（设计 §8.2）。
+        "profile_encryption_key",
+        "encryption_key",
+        "qr_png",
+        "qr_png_base64",
     }
 )
 

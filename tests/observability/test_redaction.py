@@ -16,6 +16,24 @@ def test_redacts_top_level_sensitive_keys():
     assert result["proxy_password"] == "***"
 
 
+def test_redacts_phase3_login_secrets():
+    # Phase 3b（设计 §8.2）：登录密钥、二维码、cookie 绝不进日志。
+    data = {
+        "profile_encryption_key": "s3cr3t-master-key",
+        "encryption_key": "another",
+        "qr_png_base64": "iVBORw0KGgoAAAANSUhEUg==",
+        "session_id": "jd-user-001",
+        "domain": "www.jd.com",
+    }
+    result = redact(data)
+
+    assert result["profile_encryption_key"] == "***"
+    assert result["encryption_key"] == "***"
+    assert result["qr_png_base64"] == "***"
+    assert result["session_id"] == "***"
+    assert result["domain"] == "www.jd.com"  # 非敏感字段保留
+
+
 def test_key_matching_is_case_insensitive():
     data = {"Cookie": "x", "AUTHORIZATION": "y", "Set-Cookie": "z"}
     result = redact(data)
