@@ -426,12 +426,18 @@ class LoginAdapter(Protocol):
   非登录/注入逻辑问题。
 - **京东登录态 cookie 实测为 `thor` / `pin` / `unick` / `light_key` / `_pst` 等**（新版方案，
   已非旧文档常见的 `pt_key`/`pt_pin`）。持久化**存全量 cookie**，故不受 cookie 命名变化影响。
-- **已实现（浏览器 + cookie 注入）**：实测发现 JD 商品页由 JS 渲染，纯 HTTP（即便带登录
-  cookie）只拿到通用 JS 壳（title「京东(JD.COM)…」、无商品字段）。故登录态抓取路径已从
-  `http` 改为 **stealth 浏览器 + cookie 注入**：`browser_fetch_common` 把 `{name:value}`
-  cookie 转成 playwright `SetCookieParam`（域名取注册域，如 `.jd.com`）注入浏览器，让
-  JS 带登录态渲染。**真实商品内容的净验仍需一个未被 JD 软限流的 IP**（当前测试 IP 因当日
-  高频访问被软限，返回通用壳页）。
+- **已实现并真机验证（stealth 浏览器 + 会话级 cookie 注入）**：
+  - JD 商品页由 JS 渲染，纯 HTTP（即便带登录 cookie）只拿到通用 JS 壳，故登录态抓取改走
+    stealth 浏览器。
+  - **关键坑**：Scrapling 的 **per-fetch `cookies` 在导航之后才设**，浏览器首个请求仍是匿名
+    → JD 直接重定向到登录墙（`passport.jd.com/login.aspx?ReturnUrl=…&czLogin=1`，title
+    「京东-欢迎登录」）。**必须用会话级注入**——`AsyncStealthySession(cookies=…)` 构造时传入，
+    导航前进上下文。
+  - 实现：orchestrator 登录态路径调用 `authenticated_fetch`，它用会话级 cookie 构造隐身会话
+    抓取。cookie 由 `_to_browser_cookies` 转 playwright `SetCookieParam`（域名取注册域，如
+    `.jd.com`）。
+  - **真机验证通过**：拿到真实商品页（PINKO 连衣裙,881KB,含 title 与「加入购物车」），
+    而非登录墙。
 
 ---
 
