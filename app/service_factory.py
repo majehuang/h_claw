@@ -11,6 +11,7 @@ from app.crawler.browser_pool import BrowserPool
 from app.crawler.detector import DomainRuleDefaults
 from app.crawler.http_fetcher import fetch_http
 from app.crawler.login_adapters.jd import JdLoginAdapter
+from app.crawler.login_adapters.taobao import TaobaoLoginAdapter
 from app.crawler.login_manager import LoginManager
 from app.crawler.login_persist import load_profile_cookies, persist_login_profile
 from app.crawler.orchestrator import Orchestrator
@@ -77,7 +78,7 @@ def _build_login_infra(settings: Settings, database: Database):
             await handle.close()
 
     login_manager = LoginManager(
-        adapters=[JdLoginAdapter()],
+        adapters=[JdLoginAdapter(), TaobaoLoginAdapter()],
         session_opener=session_opener,
         session_closer=session_closer,
         clock=_now,
