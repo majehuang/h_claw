@@ -455,6 +455,14 @@ class LoginAdapter(Protocol):
   - **要真正抓淘宝/天猫登录商品页,需换"浏览器原生登录"**(登录在 stealth 浏览器内完成,
     用其自身指纹建立会话,而非 curl 登录后重放),这需要解决"浏览器持有活登录页跨轮询",
     且天猫商品页另有滑块反爬,是更大的工程,列为后续项。
+- **浏览器原生登录 spike ✅（决定性验证,已定为 L3 统一方案）**：用 patchright 起持久上下文
+  打开淘宝登录页 → 截二维码 → 真机扫码 → **让那 8 秒 JS 终化在浏览器里跑完** → 浏览器跳到
+  `i.taobao.com/my_taobao.htm`（原生登录成功）→ **同一已登录浏览器抓 `item.taobao.com`
+  拿到真实商品页**（妖精的口袋 T 恤,469KB,含「加入购物车/立即购买」,未跳登录）。
+  - **证实**：① 卡点是"8 秒 JS 终化被 curl 跳过",**不是指纹 → camoufox 非必需**（patchright
+    chromium headless 即可）；② 登录在浏览器内原生完成即绕过淘宝风控。
+  - **决策**：**L3 登录统一改为"浏览器原生登录 + 加密 `user_data_dir` profile"**（见 §16），
+    对 JD/淘宝通用;现有 curl 协议式方案(§14.1 JD 部分)先保留兼容,新方案上线后统一切换。
 
 ---
 
@@ -542,3 +550,61 @@ S1,S3 ─▶ A1 ─▶ A2 ─▶ A3 ─▶ A4 ─▶【3a 上线】
 - **3a（A1–A4）不依赖登录决策**，可先独立交付，立即获得「稳定指纹 + 持久 cookie」的降拦截收益，且是 3b 的地基。
 - **3b（B1–B4）动工前必须先拿到 D1（合规授权）**，并完成 S2/S4。
 - 每个里程碑一个绿色 commit；单测保持不依赖真实浏览器/PG，集成/`browser` 测试单独跑。
+
+---
+
+## 16. Phase 3d：浏览器原生登录（L3 统一方案）
+
+### 16.1 背景与决策
+
+实测（§14.1）表明：curl 协议式登录 + cookie 重放对 JD 可用、对淘宝/天猫**不可用**（会话绑定
+登录客户端，curl 跳过"8 秒 JS 终化"→ 风控打回登录）。**浏览器原生登录 spike 已验证**能拿到
+淘宝真实商品页。故决策：**L3 登录统一改为"浏览器原生登录 + 加密 `user_data_dir` profile"**，
+对 JD/淘宝通用。该方案实际回归 Phase 3 最初设计（持久 `user_data_dir`，即 A2 的 ProfileStore +
+A3 的 ProfileManager）。
+
+### 16.2 目标架构
+
+```text
+begin_login(url)
+  → BrowserLoginManager 起 patchright 持久上下文（user_data_dir=临时 tmpfs 目录）
+  → 站点适配器 open_login(page) 打开登录页
+  → capture_qr(page)：截二维码元素 → base64 返回；浏览器页保持存活（按 login_id 挂起）
+poll_login(login_id)
+  → 适配器 poll_status(page)：观察 page.url/DOM → PENDING/SCANNED/SUCCESS/EXPIRED
+  → SUCCESS（页面跳离登录域，8 秒 JS 已跑完）时：把该 user_data_dir 加密封存为 profile
+    （ProfileStore.seal），写 account_profiles，返回 session_id；关闭上下文
+crawl_url(url, session_id)
+  → ProfileManager 加载该 profile 的 user_data_dir（解密到 tmpfs）
+  → 用该 user_data_dir 起 stealth 浏览器（天然已登录）→ 抓取 → 释放（回写密文）
+```
+
+### 16.3 复用 / 替换
+
+| 复用（已有） | 替换（现 curl 方案） |
+|---|---|
+| **A2 `ProfileStore`**：seal/load 一个目录 —— `user_data_dir` 正好是目录，直接可用 | ~~`login_persist` 的 `cookies.json`~~ → 改存整个 `user_data_dir` |
+| **A3 `ProfileManager`**：per-profile 锁（`user_data_dir` 单写）+ 并发预算 + 生命周期 —— 正是为此而建 | ~~`authenticated_fetch` 会话级 cookie 注入~~ → 改为"加载 `user_data_dir` 起浏览器" |
+| **B1 `LoginManager`** 状态机骨架 | ~~Jd/Taobao 适配器的 HTTP 协议实现~~ → 改为 DOM 观察式 |
+| **B3** 三个 MCP 工具契约（begin/poll/cancel） | ~~curl `session_opener/closer`~~ → 改为 patchright 上下文 opener/closer |
+
+### 16.4 关键点与风险
+
+- **活页面持有**：登录上下文须跨 begin→poll 存活（服务端按 `login_id` 挂起）——spike 已证 patchright 可行。
+- **无头检测**：spike 中 patchright chromium headless 登录 + 抓取均通过；个别站点抓取时或仍检测无头，需实测，必要时退回 headed / 评估 camoufox（当前不需要）。
+- **资源**：每个登录/抓取各占一个浏览器上下文（比 curl 重）；并发由 A3 ProfileManager 的预算控制。
+- **QR 过期**：适配器 `poll_status` 需识别 DOM 过期态 → 返回 EXPIRED。
+- **安全不变**：`user_data_dir` 含完整会话，仍经 ProfileStore 加密落盘（同 §4.2.1 密钥方案）；脱敏、注入边界照旧。
+
+### 16.5 开发计划（TDD，按可自闭环模块）
+
+| 里程碑 | 内容 | 单测（fake page/store）| 集成（真实浏览器）|
+|---|---|---|---|
+| **BN1** 浏览器适配器接口 + Jd/Taobao 适配器 | `open_login`/`capture_qr`(截元素)/`poll_status`(观察 url/DOM) | 契约 + 状态映射（fake page）| 真实登录页截二维码、URL 迁移 |
+| **BN2** BrowserLoginManager + 上下文 opener/closer | 起持有 patchright 持久上下文、成功封存 `user_data_dir`、TTL/cancel | 状态机 + 封存（fake ctx + fake store）| — |
+| **BN3** 登录态抓取改走 user_data_dir | ProfileManager 加载 `user_data_dir` 起浏览器抓取（替换 cookie 注入）| orchestrator 路径（fake ProfileManager）| 真实：加载已登录 profile 抓 JD/淘宝 |
+| **BN4** service_factory 装配 + 端到端 | 切换 LoginManager 为浏览器原生;JD/淘宝真机扫码验收 | 装配注入 | 端到端（扫码→封存→重启→复用抓取）|
+| **BN5** 下线 curl 方案 | 移除/弃用 HTTP 适配器、`login_persist`、`authenticated_fetch` cookie 注入 | 回归全绿 | — |
+
+**依赖链**：`spike ✅ → BN1 → BN2 → BN3 → BN4 →【统一上线】→ BN5 清理`。
+每里程碑一个绿色 commit;单测不依赖真实浏览器（fake page/context 注入），真机走 `browser`/端到端。
