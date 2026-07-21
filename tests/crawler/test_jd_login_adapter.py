@@ -1,8 +1,4 @@
-import pytest
-
 from app.crawler.login_adapters.jd import JdLoginAdapter
-
-pytestmark = pytest.mark.asyncio
 
 
 class FakeResp:
