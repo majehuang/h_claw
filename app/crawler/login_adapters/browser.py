@@ -20,7 +20,11 @@ class _QrBrowserAdapter:
         await page.goto(self.login_url, wait_until="domcontentloaded")
 
     async def capture_qr(self, page) -> bytes:
-        return await page.locator(self._qr_selector).first.screenshot()
+        # 二维码由 JS 异步渲染，等元素可见并留缓冲再截，避免截到未加载完的码。
+        locator = page.locator(self._qr_selector).first
+        await locator.wait_for(state="visible", timeout=15_000)
+        await page.wait_for_timeout(1500)
+        return await locator.screenshot()
 
     async def poll_status(self, page) -> str:
         if not any(marker in page.url for marker in self._login_url_markers):

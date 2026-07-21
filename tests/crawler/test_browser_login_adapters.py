@@ -19,6 +19,9 @@ class FakeLocator:
     async def is_visible(self):
         return self._visible
 
+    async def wait_for(self, **kwargs):
+        return None
+
 
 class FakePage:
     def __init__(self, *, url="", qr=b"QRPNG", locators=None):
@@ -29,6 +32,9 @@ class FakePage:
 
     async def goto(self, url, **kwargs):
         self.goto_calls.append(url)
+
+    async def wait_for_timeout(self, ms):
+        return None
 
     def locator(self, sel):
         if sel in self._locators:
