@@ -7,11 +7,13 @@ _NOW = datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc)
 
 
 class FakeContext:
-    def __init__(self):
+    def __init__(self, events):
+        self._events = events
         self.closed = False
 
     async def close(self):
         self.closed = True
+        self._events.append("close")
 
 
 class FakePage:
@@ -20,11 +22,13 @@ class FakePage:
 
 
 class FakeStore:
-    def __init__(self):
+    def __init__(self, events=None):
         self.sealed = []
+        self._events = events if events is not None else []
 
     def seal(self, session_id, work_dir):
         self.sealed.append((session_id, str(work_dir)))
+        self._events.append("seal")
 
 
 class FakeDB:
@@ -40,7 +44,7 @@ async def test_open_creates_context_and_tracks_user_data_dir(tmp_path):
 
     async def launcher(udd):
         opened["udd"] = udd
-        ctx = FakeContext()
+        ctx = FakeContext([])
         return ctx, FakePage(ctx)
 
     page = await open_browser_login(
@@ -52,10 +56,11 @@ async def test_open_creates_context_and_tracks_user_data_dir(tmp_path):
 
 
 async def test_close_success_seals_profile_and_returns_session_id(tmp_path):
-    ctx = FakeContext()
+    events = []
+    ctx = FakeContext(events)
     page = FakePage(ctx)
     page._hermes_udd = tmp_path / "ln1"
-    store, db = FakeStore(), FakeDB()
+    store, db = FakeStore(events), FakeDB()
 
     session_id = await close_browser_login(
         page, success=True, domain="www.jd.com",
@@ -68,10 +73,12 @@ async def test_close_success_seals_profile_and_returns_session_id(tmp_path):
     assert db.profiles["jd-user"].domain == "www.jd.com"
     assert db.profiles["jd-user"].status == "ACTIVE"
     assert ctx.closed is True
+    # 关键：先关闭上下文（刷 cookie 到磁盘）再 seal，否则 profile 缺登录态。
+    assert events == ["close", "seal"]
 
 
 async def test_close_failure_discards_and_closes(tmp_path):
-    ctx = FakeContext()
+    ctx = FakeContext([])
     page = FakePage(ctx)
     page._hermes_udd = tmp_path / "ln1"
     store, db = FakeStore(), FakeDB()

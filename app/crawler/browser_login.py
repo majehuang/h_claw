@@ -43,26 +43,25 @@ async def close_browser_login(
     ttl_seconds: int,
 ) -> str | None:
     user_data_dir = getattr(page, "_hermes_udd", None)
-    context = page.context
-    try:
-        if not success or user_data_dir is None:
-            return None
-        session_id = session_id_factory()
-        # 已登录的 user_data_dir 即 profile：加密封存（明文只在 tmpfs）。
-        store.seal(session_id, user_data_dir)
-        now = clock()
-        await db.upsert_profile(
-            AccountProfile(
-                session_id=session_id,
-                domain=domain,
-                label=None,
-                status="ACTIVE",
-                fingerprint_id=None,
-                created_at=now,
-                last_used_at=None,
-                expires_at=now + timedelta(seconds=ttl_seconds),
-            )
+    # 先关闭上下文：chromium 在关闭时才把 cookie/localStorage 刷到 user_data_dir，
+    # 必须刷盘后再封存，否则封存的 profile 缺登录态（抓取时会被打回登录页）。
+    await page.context.close()
+    if not success or user_data_dir is None:
+        return None
+    session_id = session_id_factory()
+    # 已登录的 user_data_dir 即 profile：加密封存（明文只在 tmpfs）。
+    store.seal(session_id, user_data_dir)
+    now = clock()
+    await db.upsert_profile(
+        AccountProfile(
+            session_id=session_id,
+            domain=domain,
+            label=None,
+            status="ACTIVE",
+            fingerprint_id=None,
+            created_at=now,
+            last_used_at=None,
+            expires_at=now + timedelta(seconds=ttl_seconds),
         )
-        return session_id
-    finally:
-        await context.close()
+    )
+    return session_id

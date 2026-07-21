@@ -24,7 +24,7 @@ from app.storage.database import Database
 from app.storage.profile_store import ProfileStore
 from app.tools.service import Service
 
-_LOGIN_TTL_SECONDS = 180
+_LOGIN_TTL_SECONDS = 300
 
 
 def _new_job_id() -> str:
