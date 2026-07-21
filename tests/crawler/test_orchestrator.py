@@ -313,11 +313,11 @@ async def test_domain_preferred_auto_uses_full_escalation(tmp_path):
     assert browser.calls == []
 
 
-async def test_session_id_routes_through_http_with_cookies(tmp_path):
+async def test_session_id_routes_through_stealth_with_cookies(tmp_path):
     http = FakeFetcher(_resp())
     stealth = FakeFetcher(_resp())
     db = FakeDB(profile=_profile())
-    loader = lambda sid: {"pt_key": "abc", "pt_pin": "user"}  # noqa: E731
+    loader = lambda sid: {"pt_key": "abc", "pin": "user"}  # noqa: E731
     orch = _orchestrator(
         tmp_path, db=db, http=http, stealth=stealth, cookies_loader=loader
     )
@@ -327,10 +327,10 @@ async def test_session_id_routes_through_http_with_cookies(tmp_path):
     )
 
     assert outcome.status == "SUCCESS"
-    assert outcome.fetch_mode == "http"
-    assert stealth.calls == []                       # 登录态走 HTTP，不用浏览器
-    assert http.calls == ["https://www.jd.com/p/1"]
-    assert http.cookies == [{"pt_key": "abc", "pt_pin": "user"}]  # 登录 cookie 被注入
+    assert outcome.fetch_mode == "stealth"           # 登录态走 stealth 浏览器（JS 渲染）
+    assert http.calls == []
+    assert stealth.calls == ["https://www.jd.com/p/1"]
+    assert stealth.cookies == [{"pt_key": "abc", "pin": "user"}]  # 登录 cookie 被注入
     assert db.touched == [("jd-user", datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc))]
 
 
@@ -383,17 +383,17 @@ async def test_session_id_expired_profile_returns_session_expired(tmp_path):
 async def test_domain_default_session_id_used_when_request_has_none(tmp_path):
     from app.storage.database import DomainRule
 
-    http = FakeFetcher(_resp())
+    stealth = FakeFetcher(_resp())
     rule = DomainRule(domain="www.jd.com", default_session_id="jd-user")
     db = FakeDB(domain_rule=rule, profile=_profile())
     orch = _orchestrator(
-        tmp_path, db=db, http=http, cookies_loader=lambda s: {"pt_key": "x"},
+        tmp_path, db=db, stealth=stealth, cookies_loader=lambda s: {"pt_key": "x"},
     )
 
     outcome = await orch.crawl(CrawlRequest(url="https://www.jd.com/p/1"))
 
     assert outcome.status == "SUCCESS"
-    assert http.cookies == [{"pt_key": "x"}]
+    assert stealth.cookies == [{"pt_key": "x"}]
 
 
 async def test_cache_hit_returns_cached_without_fetching(tmp_path):

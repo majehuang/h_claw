@@ -105,13 +105,13 @@ async def build_service(settings: Settings):
     async def browser_fetch(url, *, timeout_seconds, validate, session=None, cookies=None):
         return await fetch_browser(
             url, pool=pool, timeout_seconds=timeout_seconds,
-            validate=validate, session=session,
+            validate=validate, session=session, cookies=cookies,
         )
 
     async def stealth_fetch(url, *, timeout_seconds, validate, session=None, cookies=None):
         return await fetch_stealth(
             url, pool=pool, timeout_seconds=timeout_seconds,
-            validate=validate, session=session,
+            validate=validate, session=session, cookies=cookies,
         )
 
     async def http_fetch(url, *, timeout_seconds, validate, session=None, cookies=None):

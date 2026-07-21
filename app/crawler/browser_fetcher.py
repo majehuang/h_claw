@@ -14,6 +14,7 @@ async def fetch_browser(
     wait_selector: str | None = None,
     validate: Callable[[str], None] = validate_public_http_url,
     session: Any = None,
+    cookies: dict[str, str] | None = None,
 ) -> FetchResponse:
     """第二层：DynamicFetcher（Chromium 执行 JavaScript）。
 
@@ -31,4 +32,5 @@ async def fetch_browser(
         validate=validate,
         extra_kwargs=extra_kwargs,
         session=session,
+        cookies=cookies,
     )

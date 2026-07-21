@@ -232,8 +232,9 @@ class Orchestrator:
         cache_key: str,
         rule: DomainRuleDefaults,
     ) -> CrawlOutcome:
-        """带登录态 profile 的抓取：加载 profile 的登录 cookie，走 HTTP 注入抓取
-        （第 14.1 节：登录 cookie + HTTP 即可访问登录墙页面，无需浏览器）。"""
+        """带登录态 profile 的抓取：加载 profile 的登录 cookie，注入 stealth 浏览器
+        抓取（第 14.1 节：JD 等商品页由 JS 渲染，需浏览器执行 JS + 登录 cookie 才能
+        取到真实内容；纯 HTTP 只拿到 JS 壳）。"""
         if self._cookies_loader is None:
             return self._simple_error(
                 job_id, request, "SESSION_NOT_FOUND", "Profile 功能未启用。"
@@ -251,7 +252,7 @@ class Orchestrator:
 
         cookies = self._cookies_loader(session_id)
         outcome = await self._fetch_one_layer(
-            job_id, request, "http", cache_key, rule, cookies=cookies
+            job_id, request, "stealth", cache_key, rule, cookies=cookies
         )
         await self._db.touch_profile_last_used(session_id, self._clock())
         return outcome

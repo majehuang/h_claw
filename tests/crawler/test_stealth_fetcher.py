@@ -91,6 +91,26 @@ async def test_uses_provided_session_over_pool():
     assert pool.stealth_calls == []  # 未走无状态池
 
 
+async def test_injects_login_cookies_as_browser_cookies():
+    # 登录态抓取：{name:value} 转成浏览器 SetCookieParam（含注册域），注入 stealth。
+    pool = FakePool()
+    await fetch_stealth(
+        "https://item.jd.com/p/1", pool=pool, validate=_ok_validate,
+        cookies={"pt_key": "abc", "pin": "user"},
+    )
+    ck = pool.fetch_kwargs[0].get("cookies")
+    assert ck == [
+        {"name": "pt_key", "value": "abc", "domain": ".jd.com", "path": "/"},
+        {"name": "pin", "value": "user", "domain": ".jd.com", "path": "/"},
+    ]
+
+
+async def test_no_cookies_key_when_none():
+    pool = FakePool()
+    await fetch_stealth("https://shop.example.com/p/1", pool=pool, validate=_ok_validate)
+    assert "cookies" not in pool.fetch_kwargs[0]
+
+
 async def test_validates_final_url():
     pool = FakePool(FakeResponse("http://10.0.0.1/internal"))
 

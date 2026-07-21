@@ -1,12 +1,28 @@
 import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
+from urllib.parse import urlsplit
 
 from app.crawler.detector import FetchResponse
 from app.crawler.http_fetcher import FetchError
 from app.security.url_validator import URLValidationError, validate_public_http_url
 
 PoolFetch = Callable[..., Awaitable[Any]]
+
+
+def _to_browser_cookies(cookies: dict[str, str], url: str) -> list[dict[str, str]]:
+    """把 {name: value} 登录 cookie 转成 playwright SetCookieParam。
+
+    域名取目标 URL 的注册域（如 item.jd.com → .jd.com），使登录 cookie 覆盖
+    同站各子域。二级域策略对 jd.com / taobao.com 等目标站点足够。
+    """
+    host = urlsplit(url).hostname or ""
+    parts = host.split(".")
+    domain = "." + ".".join(parts[-2:]) if len(parts) >= 2 else host
+    return [
+        {"name": name, "value": value, "domain": domain, "path": "/"}
+        for name, value in cookies.items()
+    ]
 
 
 async def fetch_via_browser(
@@ -17,6 +33,7 @@ async def fetch_via_browser(
     validate: Callable[[str], None],
     extra_kwargs: dict[str, Any] | None = None,
     session: Any = None,
+    cookies: dict[str, str] | None = None,
 ) -> FetchResponse:
     """浏览器/隐身抓取的公共实现：校验初始 URL → 抓取 → 校验最终 URL → 映射。
 
@@ -38,6 +55,8 @@ async def fetch_via_browser(
         "load_dom": True,
         **(extra_kwargs or {}),
     }
+    if cookies:
+        kwargs["cookies"] = _to_browser_cookies(cookies, url)
     fetch = session.fetch if session is not None else pool_fetch
     response = await fetch(url, **kwargs)
 

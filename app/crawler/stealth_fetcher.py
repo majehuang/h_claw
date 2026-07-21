@@ -13,6 +13,7 @@ async def fetch_stealth(
     timeout_seconds: int = 90,
     validate: Callable[[str], None] = validate_public_http_url,
     session: Any = None,
+    cookies: dict[str, str] | None = None,
 ) -> FetchResponse:
     """第三层：StealthyFetcher（更一致的浏览器指纹 + Cloudflare 挑战处理）。
 
@@ -31,4 +32,5 @@ async def fetch_stealth(
         validate=validate,
         extra_kwargs=extra_kwargs,
         session=session,
+        cookies=cookies,
     )
