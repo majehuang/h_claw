@@ -426,8 +426,12 @@ class LoginAdapter(Protocol):
   非登录/注入逻辑问题。
 - **京东登录态 cookie 实测为 `thor` / `pin` / `unick` / `light_key` / `_pst` 等**（新版方案，
   已非旧文档常见的 `pt_key`/`pt_pin`）。持久化**存全量 cookie**，故不受 cookie 命名变化影响。
-- **待优化**：登录态抓取路径当前仅走单层 HTTP、被 detector 判 BLOCKED 时不重试；非限流
-  环境下真实商品页可通过，但可考虑对已登录会话放宽/升级策略。
+- **已实现（浏览器 + cookie 注入）**：实测发现 JD 商品页由 JS 渲染，纯 HTTP（即便带登录
+  cookie）只拿到通用 JS 壳（title「京东(JD.COM)…」、无商品字段）。故登录态抓取路径已从
+  `http` 改为 **stealth 浏览器 + cookie 注入**：`browser_fetch_common` 把 `{name:value}`
+  cookie 转成 playwright `SetCookieParam`（域名取注册域，如 `.jd.com`）注入浏览器，让
+  JS 带登录态渲染。**真实商品内容的净验仍需一个未被 JD 软限流的 IP**（当前测试 IP 因当日
+  高频访问被软限，返回通用壳页）。
 
 ---
 
