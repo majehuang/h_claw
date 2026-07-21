@@ -59,6 +59,7 @@ async def crawl_url(
     include_images: bool = True,
     force_refresh: bool = False,
     timeout_seconds: int = 60,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     return await crawl_url_impl(
         get_service(),
@@ -67,6 +68,7 @@ async def crawl_url(
         include_images=include_images,
         force_refresh=force_refresh,
         timeout_seconds=timeout_seconds,
+        session_id=session_id,
     )
 
 

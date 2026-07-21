@@ -59,6 +59,16 @@ async def test_add_rule_defaults_to_stealth():
     assert db.upserts[0].escalate_status_codes == [403, 429, 503]
 
 
+@pytest.mark.asyncio
+async def test_add_rule_passes_session_id():
+    db = FakeDB()
+    args = _parse(["add-rule", "www.jd.com", "--mode", "stealth", "--session-id", "jd-user"])
+
+    await run_command(args, db)
+
+    assert db.upserts[0].default_session_id == "jd-user"
+
+
 def test_add_rule_rejects_invalid_mode():
     # argparse choices 拦截非法 mode，退出码 2。
     with pytest.raises(SystemExit) as exc:

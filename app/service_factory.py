@@ -1,6 +1,8 @@
 import secrets
+import tempfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 
 from app.config import Settings
 from app.crawler.browser_fetcher import fetch_browser
@@ -8,9 +10,11 @@ from app.crawler.browser_pool import BrowserPool
 from app.crawler.detector import DomainRuleDefaults
 from app.crawler.http_fetcher import fetch_http
 from app.crawler.orchestrator import Orchestrator
+from app.crawler.profile_manager import ProfileManager
 from app.crawler.stealth_fetcher import fetch_stealth
 from app.security.url_validator import validate_public_http_url
 from app.storage.database import Database
+from app.storage.profile_store import ProfileStore
 from app.tools.service import Service
 
 
@@ -20,6 +24,33 @@ def _new_job_id() -> str:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _build_profile_manager(settings: Settings) -> ProfileManager | None:
+    """仅当注入了加密主密钥时启用持久 Profile（登录态）能力。"""
+    if not settings.profile_encryption_key:
+        return None
+
+    store = ProfileStore(
+        enc_dir=settings.profiles_dir,                               # /data，持久密文
+        work_root=Path(tempfile.gettempdir()) / "hermes-profiles",  # tmpfs，明文工作区
+        key=settings.profile_encryption_key,
+    )
+
+    async def session_factory(work_dir):
+        from scrapling.fetchers import AsyncStealthySession
+
+        session = AsyncStealthySession(
+            max_pages=1, headless=True, user_data_dir=str(work_dir)
+        )
+        await session.start()
+        return session
+
+    return ProfileManager(
+        store=store,
+        session_factory=session_factory,
+        max_active_profiles=settings.max_active_profiles,
+    )
 
 
 @asynccontextmanager
@@ -69,6 +100,7 @@ async def build_service(settings: Settings):
         http_timeout_seconds=settings.http_timeout_seconds,
         browser_timeout_seconds=settings.browser_timeout_seconds,
         stealth_timeout_seconds=settings.stealth_timeout_seconds,
+        profile_manager=_build_profile_manager(settings),
     )
 
     service = Service(

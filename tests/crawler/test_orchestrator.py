@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -6,6 +7,7 @@ from app.crawler.detector import DomainRuleDefaults, FetchResponse
 from app.crawler.http_fetcher import FetchError
 from app.crawler.orchestrator import CrawlRequest, Orchestrator
 from app.security.url_validator import URLValidationError
+from app.storage.database import AccountProfile
 
 pytestmark = pytest.mark.asyncio
 
@@ -25,16 +27,24 @@ def _resp(url="https://shop.example.com/p/1", status=200, html=USABLE_HTML, fina
 
 
 class FakeDB:
-    def __init__(self, cached=None, domain_rule=None):
+    def __init__(self, cached=None, domain_rule=None, profile=None):
         self._cached = cached
         self._domain_rule = domain_rule
+        self._profile = profile
         self.upserts = []
+        self.touched = []
 
     async def get_fresh_by_cache_key(self, cache_key, now):
         return self._cached
 
     async def get_domain_rule(self, domain):
         return self._domain_rule
+
+    async def get_profile(self, session_id):
+        return self._profile
+
+    async def touch_profile_last_used(self, session_id, now):
+        self.touched.append((session_id, now))
 
     async def upsert_crawl_result(self, record):
         self.upserts.append(record)
@@ -44,16 +54,37 @@ class FakeFetcher:
     def __init__(self, result):
         self.result = result
         self.calls: list[str] = []
+        self.sessions: list = []
 
     async def __call__(self, url, **kwargs):
         self.calls.append(url)
+        self.sessions.append(kwargs.get("session"))
         if isinstance(self.result, Exception):
             raise self.result
         return self.result
 
 
+class FakeProfileManager:
+    def __init__(self, session_obj="profile-session"):
+        self._session_obj = session_obj
+        self.used: list[str] = []
+
+    @asynccontextmanager
+    async def use(self, session_id):
+        self.used.append(session_id)
+        yield self._session_obj
+
+
+def _profile(status="ACTIVE", expires_at=None):
+    now = datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc)
+    return AccountProfile(
+        session_id="jd-user", domain="www.jd.com", label=None, status=status,
+        fingerprint_id=None, created_at=now, last_used_at=None, expires_at=expires_at,
+    )
+
+
 def _orchestrator(tmp_path, *, db=None, http=None, browser=None, stealth=None,
-                  validate=None, max_concurrency=5):
+                  validate=None, max_concurrency=5, profile_manager=None):
     return Orchestrator(
         db=db or FakeDB(),
         data_dir=tmp_path,
@@ -67,6 +98,7 @@ def _orchestrator(tmp_path, *, db=None, http=None, browser=None, stealth=None,
         cache_ttl_seconds=900,
         result_ttl_seconds=86400,
         max_concurrency=max_concurrency,
+        profile_manager=profile_manager,
     )
 
 
@@ -289,6 +321,92 @@ async def test_domain_preferred_auto_uses_full_escalation(tmp_path):
     assert outcome.fetch_mode == "http"
     assert http.calls == ["https://shop.example.com/p/1"]
     assert browser.calls == []
+
+
+async def test_session_id_routes_through_profile_via_stealth(tmp_path):
+    http = FakeFetcher(_resp())
+    browser = FakeFetcher(_resp())
+    stealth = FakeFetcher(_resp())
+    pm = FakeProfileManager(session_obj="jd-browser")
+    db = FakeDB(profile=_profile())
+    orch = _orchestrator(
+        tmp_path, db=db, http=http, browser=browser, stealth=stealth, profile_manager=pm
+    )
+
+    outcome = await orch.crawl(
+        CrawlRequest(url="https://www.jd.com/p/1", session_id="jd-user")
+    )
+
+    assert outcome.status == "SUCCESS"
+    assert outcome.fetch_mode == "stealth"
+    assert http.calls == [] and browser.calls == []
+    assert stealth.calls == ["https://www.jd.com/p/1"]
+    assert stealth.sessions == ["jd-browser"]      # profile 会话被注入抓取
+    assert pm.used == ["jd-user"]
+    assert db.touched == [("jd-user", datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc))]
+
+
+async def test_session_id_unknown_profile_returns_session_not_found(tmp_path):
+    stealth = FakeFetcher(_resp())
+    orch = _orchestrator(
+        tmp_path, db=FakeDB(profile=None), stealth=stealth,
+        profile_manager=FakeProfileManager(),
+    )
+
+    outcome = await orch.crawl(
+        CrawlRequest(url="https://www.jd.com/p/1", session_id="missing")
+    )
+
+    assert outcome.status == "FAILED"
+    assert outcome.error_code == "SESSION_NOT_FOUND"
+    assert stealth.calls == []
+
+
+async def test_session_id_revoked_returns_session_expired(tmp_path):
+    stealth = FakeFetcher(_resp())
+    orch = _orchestrator(
+        tmp_path, db=FakeDB(profile=_profile(status="REVOKED")), stealth=stealth,
+        profile_manager=FakeProfileManager(),
+    )
+
+    outcome = await orch.crawl(
+        CrawlRequest(url="https://www.jd.com/p/1", session_id="jd-user")
+    )
+
+    assert outcome.error_code == "SESSION_EXPIRED"
+    assert stealth.calls == []
+
+
+async def test_session_id_expired_profile_returns_session_expired(tmp_path):
+    past = datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc) - timedelta(days=1)
+    stealth = FakeFetcher(_resp())
+    orch = _orchestrator(
+        tmp_path, db=FakeDB(profile=_profile(expires_at=past)), stealth=stealth,
+        profile_manager=FakeProfileManager(),
+    )
+
+    outcome = await orch.crawl(
+        CrawlRequest(url="https://www.jd.com/p/1", session_id="jd-user")
+    )
+
+    assert outcome.error_code == "SESSION_EXPIRED"
+    assert stealth.calls == []
+
+
+async def test_domain_default_session_id_used_when_request_has_none(tmp_path):
+    from app.storage.database import DomainRule
+
+    stealth = FakeFetcher(_resp())
+    pm = FakeProfileManager(session_obj="jd-browser")
+    rule = DomainRule(domain="www.jd.com", default_session_id="jd-user")
+    db = FakeDB(domain_rule=rule, profile=_profile())
+    orch = _orchestrator(tmp_path, db=db, stealth=stealth, profile_manager=pm)
+
+    outcome = await orch.crawl(CrawlRequest(url="https://www.jd.com/p/1"))
+
+    assert outcome.status == "SUCCESS"
+    assert pm.used == ["jd-user"]
+    assert stealth.sessions == ["jd-browser"]
 
 
 async def test_cache_hit_returns_cached_without_fetching(tmp_path):

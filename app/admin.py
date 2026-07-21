@@ -49,6 +49,10 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--min-content-bytes", type=int, default=2048)
     add.add_argument("--escalate-status-codes", default="403,429,503")
     add.add_argument("--source", default="manual")
+    add.add_argument(
+        "--session-id", default=None,
+        help="默认关联的登录 profile；设置后该域名 auto 抓取自动带登录态",
+    )
 
     sub.add_parser("list", help="列出全部域名规则")
 
@@ -65,7 +69,8 @@ def _format_rule(rule: DomainRule) -> str:
     return (
         f"{rule.domain}\tmode={rule.preferred_mode}\t"
         f"min_content_bytes={rule.min_content_bytes}\t"
-        f"escalate={rule.escalate_status_codes}\tsource={rule.source}"
+        f"escalate={rule.escalate_status_codes}\tsource={rule.source}\t"
+        f"session_id={rule.default_session_id}"
     )
 
 
@@ -78,6 +83,7 @@ async def run_command(args: argparse.Namespace, db: Any) -> int:
             min_content_bytes=args.min_content_bytes,
             escalate_status_codes=_parse_status_codes(args.escalate_status_codes),
             source=args.source,
+            default_session_id=args.session_id,
         )
         await db.upsert_domain_rule(rule)
         print(f"已保存域名规则：{args.domain} → mode={args.preferred_mode}")

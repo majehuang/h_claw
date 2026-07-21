@@ -24,7 +24,8 @@ async def fetch_via_browser(
     最终 URL（`resp.url`）。针对重定向中间跳转和子资源的 SSRF 兜底依赖容器
     网络策略（第 14.1 节），这是浏览器层 SSRF 防护的纵深部分。
 
-    `session` 参数为第 14.4 节预留的会话/登录态占位，第一期恒为 None。
+    `session`（第 14.4 节 / Phase 3a）：传入持久 profile 的浏览器会话时，改用它
+    抓取（携带登录态 cookie/指纹），绕过无状态浏览器池；为 None 时走池。
     """
     try:
         await asyncio.to_thread(validate, url)
@@ -37,7 +38,8 @@ async def fetch_via_browser(
         "load_dom": True,
         **(extra_kwargs or {}),
     }
-    response = await pool_fetch(url, **kwargs)
+    fetch = session.fetch if session is not None else pool_fetch
+    response = await fetch(url, **kwargs)
 
     try:
         await asyncio.to_thread(validate, response.url)

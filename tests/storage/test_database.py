@@ -98,6 +98,21 @@ async def test_get_domain_rule_returns_none_when_absent(db):
     assert await db.get_domain_rule("unknown.example.com") is None
 
 
+async def test_domain_rule_default_session_id_roundtrip(db):
+    rule = DomainRule(
+        domain="www.jd.com", preferred_mode="stealth", default_session_id="jd-user-001"
+    )
+    await db.upsert_domain_rule(rule)
+
+    fetched = await db.get_domain_rule("www.jd.com")
+    assert fetched.default_session_id == "jd-user-001"
+
+
+async def test_domain_rule_default_session_id_defaults_none(db):
+    await db.upsert_domain_rule(DomainRule(domain="shop.example.com"))
+    assert (await db.get_domain_rule("shop.example.com")).default_session_id is None
+
+
 async def test_list_domain_rules_returns_all_sorted(db):
     await db.upsert_domain_rule(DomainRule(domain="b.example.com", preferred_mode="stealth"))
     await db.upsert_domain_rule(DomainRule(domain="a.example.com", preferred_mode="browser"))

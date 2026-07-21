@@ -106,6 +106,39 @@ async def test_crawl_url_impl_passes_request_fields_to_orchestrator():
 
 
 @pytest.mark.asyncio
+async def test_crawl_url_impl_passes_session_id():
+    service = FakeService(_success_outcome("# ok"))
+
+    await crawl_url_impl(
+        service,
+        url="https://www.jd.com/p/1",
+        mode="auto",
+        include_images=True,
+        force_refresh=False,
+        timeout_seconds=60,
+        session_id="jd-user",
+    )
+
+    assert service.orchestrator.requests[0].session_id == "jd-user"
+
+
+@pytest.mark.asyncio
+async def test_crawl_url_impl_session_id_defaults_none():
+    service = FakeService(_success_outcome("# ok"))
+
+    await crawl_url_impl(
+        service,
+        url="https://shop.example.com/p/1",
+        mode="auto",
+        include_images=True,
+        force_refresh=False,
+        timeout_seconds=60,
+    )
+
+    assert service.orchestrator.requests[0].session_id is None
+
+
+@pytest.mark.asyncio
 async def test_crawl_url_impl_rejects_invalid_mode():
     service = FakeService(_success_outcome("# ok"))
     with pytest.raises(ValueError):

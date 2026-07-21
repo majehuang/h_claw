@@ -69,6 +69,7 @@ async def crawl_url_impl(
     include_images: bool,
     force_refresh: bool,
     timeout_seconds: int,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     if mode not in _VALID_MODES:
         raise ValueError(f"不支持的 mode: {mode!r}，允许值 {sorted(_VALID_MODES)}")
@@ -83,6 +84,7 @@ async def crawl_url_impl(
         include_images=include_images,
         force_refresh=force_refresh,
         timeout_seconds=timeout_seconds,
+        session_id=session_id,
     )
     outcome = await service.orchestrator.crawl(request)
     return build_crawl_response(

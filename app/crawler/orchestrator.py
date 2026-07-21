@@ -63,6 +63,7 @@ class CrawlRequest:
     include_images: bool = True
     force_refresh: bool = False
     timeout_seconds: int = 60
+    session_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -108,8 +109,10 @@ class Orchestrator:
         browser_timeout_seconds: int = 60,
         stealth_timeout_seconds: int = 90,
         locale: str = "zh-CN",
+        profile_manager: Any = None,
     ):
         self._db = db
+        self._profile_manager = profile_manager
         self._data_dir = data_dir
         self._fetchers: dict[str, Fetcher] = {
             "http": http_fetch,
@@ -161,8 +164,10 @@ class Orchestrator:
             return self._fetch_error_outcome(job_id, request, exc.error_code, str(exc))
 
         domain = urlsplit(request.url).hostname or ""
+        rule, preferred_mode, default_session_id = await self._resolve_rule(domain)
+        effective_session_id = request.session_id or default_session_id
         cache_key = compute_cache_key(
-            request.url, request.include_images, self._locale, None
+            request.url, request.include_images, self._locale, effective_session_id
         )
 
         if not request.force_refresh:
@@ -170,7 +175,11 @@ class Orchestrator:
             if cached is not None:
                 return self._outcome_from_cached(cached)
 
-        rule, preferred_mode = await self._resolve_rule(domain)
+        if effective_session_id is not None:
+            return await self._crawl_with_profile(
+                job_id, request, effective_session_id, cache_key, rule
+            )
+
         layers = _resolve_layers(request.mode, preferred_mode)
 
         last_error: FetchError | None = None
@@ -202,15 +211,93 @@ class Orchestrator:
             job_id, request, cache_key, last_verdict_reason, last_error
         )
 
-    async def _resolve_rule(self, domain: str) -> tuple[DomainRuleDefaults, str]:
+    async def _resolve_rule(
+        self, domain: str
+    ) -> tuple[DomainRuleDefaults, str, str | None]:
         record = await self._db.get_domain_rule(domain)
         if record is None:
-            return self._default_rule, "auto"
+            return self._default_rule, "auto", None
         defaults = DomainRuleDefaults(
             min_content_bytes=record.min_content_bytes,
             escalate_status_codes=tuple(record.escalate_status_codes or (403, 429, 503)),
         )
-        return defaults, record.preferred_mode or "auto"
+        return defaults, record.preferred_mode or "auto", record.default_session_id
+
+    async def _crawl_with_profile(
+        self,
+        job_id: str,
+        request: CrawlRequest,
+        session_id: str,
+        cache_key: str,
+        rule: DomainRuleDefaults,
+    ) -> CrawlOutcome:
+        """带登录态 profile 的抓取：经 ProfileManager 取持久浏览器会话，走隐身层。"""
+        if self._profile_manager is None:
+            return self._simple_error(
+                job_id, request, "SESSION_NOT_FOUND", "Profile 功能未启用。"
+            )
+        profile = await self._db.get_profile(session_id)
+        if profile is None:
+            return self._simple_error(
+                job_id, request, "SESSION_NOT_FOUND", f"会话 {session_id} 不存在。"
+            )
+        expired = profile.expires_at is not None and profile.expires_at <= self._clock()
+        if profile.status != "ACTIVE" or expired:
+            return self._simple_error(
+                job_id, request, "SESSION_EXPIRED", "登录态已失效，请重新登录。"
+            )
+
+        async with self._profile_manager.use(session_id) as browser_session:
+            outcome = await self._fetch_one_layer(
+                job_id, request, "stealth", cache_key, rule, session=browser_session
+            )
+        await self._db.touch_profile_last_used(session_id, self._clock())
+        return outcome
+
+    async def _fetch_one_layer(
+        self,
+        job_id: str,
+        request: CrawlRequest,
+        mode_name: str,
+        cache_key: str,
+        rule: DomainRuleDefaults,
+        *,
+        session: Any,
+    ) -> CrawlOutcome:
+        try:
+            response = await self._fetchers[mode_name](
+                request.url,
+                timeout_seconds=self._layer_timeouts[mode_name],
+                validate=self._validate,
+                session=session,
+            )
+        except FetchError as exc:
+            if exc.error_code in _IMMEDIATE_TERMINAL_ERRORS:
+                return self._fetch_error_outcome(
+                    job_id, request, exc.error_code, str(exc)
+                )
+            return await self._terminal_outcome(
+                job_id, request, cache_key, None, exc
+            )
+
+        verdict = detect(response, rule)
+        if verdict.ok:
+            return await self._finalize(job_id, request, response, mode_name, cache_key)
+        return await self._terminal_outcome(
+            job_id, request, cache_key, verdict.reason, None
+        )
+
+    def _simple_error(
+        self, job_id: str, request: CrawlRequest, error_code: str, message: str
+    ) -> CrawlOutcome:
+        return CrawlOutcome(
+            status="FAILED",
+            job_id=job_id,
+            source_url=request.url,
+            error_code=error_code,
+            error_message=message,
+            retriable=False,
+        )
 
     async def _finalize(
         self,

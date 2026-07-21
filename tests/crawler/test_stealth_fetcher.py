@@ -64,6 +64,33 @@ async def test_uses_stealth_timeout_and_one_extra_retry():
     assert kwargs["retries"] == 1
 
 
+class FakeProfileSession:
+    def __init__(self, response=None):
+        self.calls: list[str] = []
+        self._response = response
+
+    async def fetch(self, url, **kwargs):
+        self.calls.append(url)
+        return self._response or FakeResponse(url)
+
+
+async def test_uses_provided_session_over_pool():
+    # A4：传入 profile 浏览器会话时，走该会话（带登录态 cookie），绕过无状态池。
+    pool = FakePool()
+    session = FakeProfileSession(FakeResponse("https://shop.example.com/p/1"))
+
+    result = await fetch_stealth(
+        "https://shop.example.com/p/1",
+        pool=pool,
+        validate=_ok_validate,
+        session=session,
+    )
+
+    assert result.status_code == 200
+    assert session.calls == ["https://shop.example.com/p/1"]
+    assert pool.stealth_calls == []  # 未走无状态池
+
+
 async def test_validates_final_url():
     pool = FakePool(FakeResponse("http://10.0.0.1/internal"))
 

@@ -50,6 +50,7 @@ class DomainRule:
     min_content_bytes: int = 2048
     escalate_status_codes: list[int] | None = None
     source: str = "manual"
+    default_session_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -91,6 +92,7 @@ def _row_to_domain_rule(row: asyncpg.Record) -> DomainRule:
         min_content_bytes=row["min_content_bytes"],
         escalate_status_codes=list(row["escalate_status_codes"]),
         source=row["source"],
+        default_session_id=row["default_session_id"],
     )
 
 
@@ -190,13 +192,14 @@ class Database:
                 f"""
                 INSERT INTO {_SCHEMA}.crawl_domain_rules (
                     domain, preferred_mode, min_content_bytes,
-                    escalate_status_codes, source, updated_at
-                ) VALUES ($1, $2, $3, $4, $5, now())
+                    escalate_status_codes, source, default_session_id, updated_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, now())
                 ON CONFLICT (domain) DO UPDATE SET
                     preferred_mode = EXCLUDED.preferred_mode,
                     min_content_bytes = EXCLUDED.min_content_bytes,
                     escalate_status_codes = EXCLUDED.escalate_status_codes,
                     source = EXCLUDED.source,
+                    default_session_id = EXCLUDED.default_session_id,
                     updated_at = now()
                 """,
                 rule.domain,
@@ -204,6 +207,7 @@ class Database:
                 rule.min_content_bytes,
                 escalate_status_codes,
                 rule.source,
+                rule.default_session_id,
             )
 
     async def upsert_profile(self, profile: AccountProfile) -> None:
