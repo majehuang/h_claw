@@ -110,10 +110,13 @@ class Orchestrator:
         stealth_timeout_seconds: int = 90,
         locale: str = "zh-CN",
         cookies_loader: Callable[[str], dict[str, str]] | None = None,
+        authenticated_fetch: Fetcher | None = None,
     ):
         self._db = db
         # 登录态 profile 的 cookie 加载器（session_id -> cookies dict）。
         self._cookies_loader = cookies_loader
+        # 带登录 cookie 的隐身浏览器抓取（会话级注入，导航前生效）。
+        self._authenticated_fetch = authenticated_fetch
         self._data_dir = data_dir
         self._fetchers: dict[str, Fetcher] = {
             "http": http_fetch,
@@ -232,10 +235,10 @@ class Orchestrator:
         cache_key: str,
         rule: DomainRuleDefaults,
     ) -> CrawlOutcome:
-        """带登录态 profile 的抓取：加载 profile 的登录 cookie，注入 stealth 浏览器
-        抓取（第 14.1 节：JD 等商品页由 JS 渲染，需浏览器执行 JS + 登录 cookie 才能
-        取到真实内容；纯 HTTP 只拿到 JS 壳）。"""
-        if self._cookies_loader is None:
+        """带登录态 profile 的抓取：加载 profile 的登录 cookie，会话级注入 stealth
+        浏览器抓取（第 14.1 节：JD 等商品页由 JS 渲染，需浏览器执行 JS + 登录 cookie
+        才能取到真实内容；cookie 必须在导航前注入到浏览器上下文，故用会话级注入）。"""
+        if self._cookies_loader is None or self._authenticated_fetch is None:
             return self._simple_error(
                 job_id, request, "SESSION_NOT_FOUND", "Profile 功能未启用。"
             )
@@ -251,45 +254,30 @@ class Orchestrator:
             )
 
         cookies = self._cookies_loader(session_id)
-        outcome = await self._fetch_one_layer(
-            job_id, request, "stealth", cache_key, rule, cookies=cookies
-        )
-        await self._db.touch_profile_last_used(session_id, self._clock())
-        return outcome
-
-    async def _fetch_one_layer(
-        self,
-        job_id: str,
-        request: CrawlRequest,
-        mode_name: str,
-        cache_key: str,
-        rule: DomainRuleDefaults,
-        *,
-        cookies: dict[str, str] | None = None,
-    ) -> CrawlOutcome:
         try:
-            response = await self._fetchers[mode_name](
+            response = await self._authenticated_fetch(
                 request.url,
-                timeout_seconds=self._layer_timeouts[mode_name],
+                timeout_seconds=self._layer_timeouts["stealth"],
                 validate=self._validate,
-                session=None,
                 cookies=cookies,
             )
         except FetchError as exc:
             if exc.error_code in _IMMEDIATE_TERMINAL_ERRORS:
-                return self._fetch_error_outcome(
-                    job_id, request, exc.error_code, str(exc)
+                outcome = self._fetch_error_outcome(job_id, request, exc.error_code, str(exc))
+            else:
+                outcome = await self._terminal_outcome(job_id, request, cache_key, None, exc)
+        else:
+            verdict = detect(response, rule)
+            if verdict.ok:
+                outcome = await self._finalize(
+                    job_id, request, response, "stealth", cache_key
                 )
-            return await self._terminal_outcome(
-                job_id, request, cache_key, None, exc
-            )
-
-        verdict = detect(response, rule)
-        if verdict.ok:
-            return await self._finalize(job_id, request, response, mode_name, cache_key)
-        return await self._terminal_outcome(
-            job_id, request, cache_key, verdict.reason, None
-        )
+            else:
+                outcome = await self._terminal_outcome(
+                    job_id, request, cache_key, verdict.reason, None
+                )
+        await self._db.touch_profile_last_used(session_id, self._clock())
+        return outcome
 
     def _simple_error(
         self, job_id: str, request: CrawlRequest, error_code: str, message: str

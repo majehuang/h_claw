@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.config import Settings
+from app.crawler.browser_fetch_common import _to_browser_cookies, fetch_via_browser
 from app.crawler.browser_fetcher import fetch_browser
 from app.crawler.browser_pool import BrowserPool
 from app.crawler.detector import DomainRuleDefaults
@@ -119,6 +120,28 @@ async def build_service(settings: Settings):
             url, timeout_seconds=timeout_seconds, validate=validate, cookies=cookies
         )
 
+    async def authenticated_fetch(url, *, timeout_seconds, validate, cookies):
+        # 登录 cookie 必须在导航前注入浏览器上下文 → 用会话级 cookies 构造隐身会话
+        # （per-fetch cookies 在导航后才生效，会被登录墙拦下）。
+        from scrapling.fetchers import AsyncStealthySession
+
+        browser_cookies = _to_browser_cookies(cookies or {}, url)
+        session = AsyncStealthySession(
+            max_pages=1, headless=True, cookies=browser_cookies
+        )
+        await session.start()
+        try:
+            return await fetch_via_browser(
+                url,
+                pool_fetch=None,
+                timeout_seconds=timeout_seconds,
+                validate=validate,
+                extra_kwargs={"solve_cloudflare": True, "retries": 1},
+                session=session,
+            )
+        finally:
+            await session.close()
+
     cookies_loader, login_manager = _build_login_infra(settings, database)
 
     orchestrator = Orchestrator(
@@ -138,6 +161,7 @@ async def build_service(settings: Settings):
         browser_timeout_seconds=settings.browser_timeout_seconds,
         stealth_timeout_seconds=settings.stealth_timeout_seconds,
         cookies_loader=cookies_loader,
+        authenticated_fetch=authenticated_fetch,
     )
 
     service = Service(

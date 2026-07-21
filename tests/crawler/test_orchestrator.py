@@ -73,8 +73,23 @@ def _profile(status="ACTIVE", expires_at=None):
     )
 
 
+class FakeAuthFetcher:
+    def __init__(self, result):
+        self.result = result
+        self.calls: list[str] = []
+        self.cookies: list = []
+
+    async def __call__(self, url, **kwargs):
+        self.calls.append(url)
+        self.cookies.append(kwargs.get("cookies"))
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
 def _orchestrator(tmp_path, *, db=None, http=None, browser=None, stealth=None,
-                  validate=None, max_concurrency=5, cookies_loader=None):
+                  validate=None, max_concurrency=5, cookies_loader=None,
+                  authenticated_fetch=None):
     return Orchestrator(
         db=db or FakeDB(),
         data_dir=tmp_path,
@@ -89,6 +104,7 @@ def _orchestrator(tmp_path, *, db=None, http=None, browser=None, stealth=None,
         result_ttl_seconds=86400,
         max_concurrency=max_concurrency,
         cookies_loader=cookies_loader,
+        authenticated_fetch=authenticated_fetch,
     )
 
 
@@ -313,13 +329,13 @@ async def test_domain_preferred_auto_uses_full_escalation(tmp_path):
     assert browser.calls == []
 
 
-async def test_session_id_routes_through_stealth_with_cookies(tmp_path):
-    http = FakeFetcher(_resp())
+async def test_session_id_routes_through_authenticated_fetch(tmp_path):
     stealth = FakeFetcher(_resp())
+    auth = FakeAuthFetcher(_resp())
     db = FakeDB(profile=_profile())
     loader = lambda sid: {"pt_key": "abc", "pin": "user"}  # noqa: E731
     orch = _orchestrator(
-        tmp_path, db=db, http=http, stealth=stealth, cookies_loader=loader
+        tmp_path, db=db, stealth=stealth, cookies_loader=loader, authenticated_fetch=auth
     )
 
     outcome = await orch.crawl(
@@ -327,17 +343,18 @@ async def test_session_id_routes_through_stealth_with_cookies(tmp_path):
     )
 
     assert outcome.status == "SUCCESS"
-    assert outcome.fetch_mode == "stealth"           # 登录态走 stealth 浏览器（JS 渲染）
-    assert http.calls == []
-    assert stealth.calls == ["https://www.jd.com/p/1"]
-    assert stealth.cookies == [{"pt_key": "abc", "pin": "user"}]  # 登录 cookie 被注入
+    assert outcome.fetch_mode == "stealth"
+    assert stealth.calls == []                       # 不走无状态池，走会话级注入
+    assert auth.calls == ["https://www.jd.com/p/1"]
+    assert auth.cookies == [{"pt_key": "abc", "pin": "user"}]  # 登录 cookie 注入
     assert db.touched == [("jd-user", datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc))]
 
 
 async def test_session_id_unknown_profile_returns_session_not_found(tmp_path):
-    http = FakeFetcher(_resp())
+    auth = FakeAuthFetcher(_resp())
     orch = _orchestrator(
-        tmp_path, db=FakeDB(profile=None), http=http, cookies_loader=lambda s: {},
+        tmp_path, db=FakeDB(profile=None), cookies_loader=lambda s: {},
+        authenticated_fetch=auth,
     )
 
     outcome = await orch.crawl(
@@ -346,14 +363,14 @@ async def test_session_id_unknown_profile_returns_session_not_found(tmp_path):
 
     assert outcome.status == "FAILED"
     assert outcome.error_code == "SESSION_NOT_FOUND"
-    assert http.calls == []
+    assert auth.calls == []
 
 
 async def test_session_id_revoked_returns_session_expired(tmp_path):
-    http = FakeFetcher(_resp())
+    auth = FakeAuthFetcher(_resp())
     orch = _orchestrator(
-        tmp_path, db=FakeDB(profile=_profile(status="REVOKED")), http=http,
-        cookies_loader=lambda s: {},
+        tmp_path, db=FakeDB(profile=_profile(status="REVOKED")),
+        cookies_loader=lambda s: {}, authenticated_fetch=auth,
     )
 
     outcome = await orch.crawl(
@@ -361,15 +378,15 @@ async def test_session_id_revoked_returns_session_expired(tmp_path):
     )
 
     assert outcome.error_code == "SESSION_EXPIRED"
-    assert http.calls == []
+    assert auth.calls == []
 
 
 async def test_session_id_expired_profile_returns_session_expired(tmp_path):
     past = datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc) - timedelta(days=1)
-    http = FakeFetcher(_resp())
+    auth = FakeAuthFetcher(_resp())
     orch = _orchestrator(
-        tmp_path, db=FakeDB(profile=_profile(expires_at=past)), http=http,
-        cookies_loader=lambda s: {},
+        tmp_path, db=FakeDB(profile=_profile(expires_at=past)),
+        cookies_loader=lambda s: {}, authenticated_fetch=auth,
     )
 
     outcome = await orch.crawl(
@@ -377,23 +394,24 @@ async def test_session_id_expired_profile_returns_session_expired(tmp_path):
     )
 
     assert outcome.error_code == "SESSION_EXPIRED"
-    assert http.calls == []
+    assert auth.calls == []
 
 
 async def test_domain_default_session_id_used_when_request_has_none(tmp_path):
     from app.storage.database import DomainRule
 
-    stealth = FakeFetcher(_resp())
+    auth = FakeAuthFetcher(_resp())
     rule = DomainRule(domain="www.jd.com", default_session_id="jd-user")
     db = FakeDB(domain_rule=rule, profile=_profile())
     orch = _orchestrator(
-        tmp_path, db=db, stealth=stealth, cookies_loader=lambda s: {"pt_key": "x"},
+        tmp_path, db=db, cookies_loader=lambda s: {"pt_key": "x"},
+        authenticated_fetch=auth,
     )
 
     outcome = await orch.crawl(CrawlRequest(url="https://www.jd.com/p/1"))
 
     assert outcome.status == "SUCCESS"
-    assert stealth.cookies == [{"pt_key": "x"}]
+    assert auth.cookies == [{"pt_key": "x"}]
 
 
 async def test_cache_hit_returns_cached_without_fetching(tmp_path):
