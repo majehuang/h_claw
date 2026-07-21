@@ -133,7 +133,9 @@ class LoginManager:
         self, login_id: str, entry: _Entry, status: str
     ) -> LoginSession:
         success = status == LoginState.SUCCESS
-        session_id = await self._close(entry.handle, success=success)
+        session_id = await self._close(
+            entry.handle, success=success, domain=entry.login.domain
+        )
         final = replace(
             entry.login,
             status=status,

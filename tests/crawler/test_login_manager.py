@@ -42,7 +42,7 @@ def _manager(adapter, *, clock=None, ttl=180):
         opened.append((domain, handle))
         return handle
 
-    async def closer(handle, *, success):
+    async def closer(handle, *, success, domain=None):
         closed.append((handle, success))
         return "new-session-id" if success else None
 

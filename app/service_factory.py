@@ -9,27 +9,42 @@ from app.crawler.browser_fetcher import fetch_browser
 from app.crawler.browser_pool import BrowserPool
 from app.crawler.detector import DomainRuleDefaults
 from app.crawler.http_fetcher import fetch_http
+from app.crawler.login_adapters.jd import JdLoginAdapter
+from app.crawler.login_manager import LoginManager
+from app.crawler.login_persist import load_profile_cookies, persist_login_profile
 from app.crawler.orchestrator import Orchestrator
-from app.crawler.profile_manager import ProfileManager
 from app.crawler.stealth_fetcher import fetch_stealth
 from app.security.url_validator import validate_public_http_url
 from app.storage.database import Database
 from app.storage.profile_store import ProfileStore
 from app.tools.service import Service
 
+_LOGIN_TTL_SECONDS = 180
+
 
 def _new_job_id() -> str:
     return f"cr_{secrets.token_hex(12)}"
+
+
+def _new_session_id() -> str:
+    return f"login_{secrets.token_hex(8)}"
+
+
+def _new_login_id() -> str:
+    return f"lg_{secrets.token_hex(6)}"
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _build_profile_manager(settings: Settings) -> ProfileManager | None:
-    """仅当注入了加密主密钥时启用持久 Profile（登录态）能力。"""
+def _build_login_infra(settings: Settings, database: Database):
+    """构建登录态设施：cookie 加载器 + LoginManager（扫码登录）。
+
+    仅当注入了加密主密钥时启用；否则返回 (None, None)，登录相关能力关闭。
+    """
     if not settings.profile_encryption_key:
-        return None
+        return None, None
 
     store = ProfileStore(
         enc_dir=settings.profiles_dir,                               # /data，持久密文
@@ -37,20 +52,38 @@ def _build_profile_manager(settings: Settings) -> ProfileManager | None:
         key=settings.profile_encryption_key,
     )
 
-    async def session_factory(work_dir):
-        from scrapling.fetchers import AsyncStealthySession
+    def cookies_loader(session_id: str) -> dict[str, str]:
+        return load_profile_cookies(store, session_id)
 
-        session = AsyncStealthySession(
-            max_pages=1, headless=True, user_data_dir=str(work_dir)
-        )
-        await session.start()
-        return session
+    async def session_opener(domain: str):
+        from curl_cffi.requests import AsyncSession
 
-    return ProfileManager(
-        store=store,
-        session_factory=session_factory,
-        max_active_profiles=settings.max_active_profiles,
+        return AsyncSession(impersonate="chrome")
+
+    async def session_closer(handle, *, success: bool, domain: str):
+        try:
+            if not success:
+                return None
+            cookies = handle.cookies.get_dict()
+            session_id = _new_session_id()
+            await persist_login_profile(
+                cookies=cookies, domain=domain, label=None,
+                store=store, db=database, session_id=session_id,
+                clock=_now, ttl_seconds=settings.profile_ttl_seconds,
+            )
+            return session_id
+        finally:
+            await handle.close()
+
+    login_manager = LoginManager(
+        adapters=[JdLoginAdapter()],
+        session_opener=session_opener,
+        session_closer=session_closer,
+        clock=_now,
+        id_factory=_new_login_id,
+        ttl_seconds=_LOGIN_TTL_SECONDS,
     )
+    return cookies_loader, login_manager
 
 
 @asynccontextmanager
@@ -69,20 +102,24 @@ async def build_service(settings: Settings):
     pool = BrowserPool(max_browser_pages=settings.max_browser_pages)
     await pool.start()
 
-    async def browser_fetch(url, *, timeout_seconds, validate, session=None):
+    async def browser_fetch(url, *, timeout_seconds, validate, session=None, cookies=None):
         return await fetch_browser(
             url, pool=pool, timeout_seconds=timeout_seconds,
             validate=validate, session=session,
         )
 
-    async def stealth_fetch(url, *, timeout_seconds, validate, session=None):
+    async def stealth_fetch(url, *, timeout_seconds, validate, session=None, cookies=None):
         return await fetch_stealth(
             url, pool=pool, timeout_seconds=timeout_seconds,
             validate=validate, session=session,
         )
 
-    async def http_fetch(url, *, timeout_seconds, validate, session=None):
-        return await fetch_http(url, timeout_seconds=timeout_seconds, validate=validate)
+    async def http_fetch(url, *, timeout_seconds, validate, session=None, cookies=None):
+        return await fetch_http(
+            url, timeout_seconds=timeout_seconds, validate=validate, cookies=cookies
+        )
+
+    cookies_loader, login_manager = _build_login_infra(settings, database)
 
     orchestrator = Orchestrator(
         db=database,
@@ -100,7 +137,7 @@ async def build_service(settings: Settings):
         http_timeout_seconds=settings.http_timeout_seconds,
         browser_timeout_seconds=settings.browser_timeout_seconds,
         stealth_timeout_seconds=settings.stealth_timeout_seconds,
-        profile_manager=_build_profile_manager(settings),
+        cookies_loader=cookies_loader,
     )
 
     service = Service(
@@ -109,6 +146,7 @@ async def build_service(settings: Settings):
         data_dir=settings.data_dir,
         inline_limit_bytes=settings.max_inline_markdown_bytes,
         max_markdown_bytes=settings.max_markdown_bytes,
+        login_manager=login_manager,
     )
 
     try:

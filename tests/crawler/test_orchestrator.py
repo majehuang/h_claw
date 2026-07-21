@@ -1,4 +1,3 @@
-from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -55,24 +54,15 @@ class FakeFetcher:
         self.result = result
         self.calls: list[str] = []
         self.sessions: list = []
+        self.cookies: list = []
 
     async def __call__(self, url, **kwargs):
         self.calls.append(url)
         self.sessions.append(kwargs.get("session"))
+        self.cookies.append(kwargs.get("cookies"))
         if isinstance(self.result, Exception):
             raise self.result
         return self.result
-
-
-class FakeProfileManager:
-    def __init__(self, session_obj="profile-session"):
-        self._session_obj = session_obj
-        self.used: list[str] = []
-
-    @asynccontextmanager
-    async def use(self, session_id):
-        self.used.append(session_id)
-        yield self._session_obj
 
 
 def _profile(status="ACTIVE", expires_at=None):
@@ -84,7 +74,7 @@ def _profile(status="ACTIVE", expires_at=None):
 
 
 def _orchestrator(tmp_path, *, db=None, http=None, browser=None, stealth=None,
-                  validate=None, max_concurrency=5, profile_manager=None):
+                  validate=None, max_concurrency=5, cookies_loader=None):
     return Orchestrator(
         db=db or FakeDB(),
         data_dir=tmp_path,
@@ -98,7 +88,7 @@ def _orchestrator(tmp_path, *, db=None, http=None, browser=None, stealth=None,
         cache_ttl_seconds=900,
         result_ttl_seconds=86400,
         max_concurrency=max_concurrency,
-        profile_manager=profile_manager,
+        cookies_loader=cookies_loader,
     )
 
 
@@ -323,14 +313,13 @@ async def test_domain_preferred_auto_uses_full_escalation(tmp_path):
     assert browser.calls == []
 
 
-async def test_session_id_routes_through_profile_via_stealth(tmp_path):
+async def test_session_id_routes_through_http_with_cookies(tmp_path):
     http = FakeFetcher(_resp())
-    browser = FakeFetcher(_resp())
     stealth = FakeFetcher(_resp())
-    pm = FakeProfileManager(session_obj="jd-browser")
     db = FakeDB(profile=_profile())
+    loader = lambda sid: {"pt_key": "abc", "pt_pin": "user"}  # noqa: E731
     orch = _orchestrator(
-        tmp_path, db=db, http=http, browser=browser, stealth=stealth, profile_manager=pm
+        tmp_path, db=db, http=http, stealth=stealth, cookies_loader=loader
     )
 
     outcome = await orch.crawl(
@@ -338,19 +327,17 @@ async def test_session_id_routes_through_profile_via_stealth(tmp_path):
     )
 
     assert outcome.status == "SUCCESS"
-    assert outcome.fetch_mode == "stealth"
-    assert http.calls == [] and browser.calls == []
-    assert stealth.calls == ["https://www.jd.com/p/1"]
-    assert stealth.sessions == ["jd-browser"]      # profile 会话被注入抓取
-    assert pm.used == ["jd-user"]
+    assert outcome.fetch_mode == "http"
+    assert stealth.calls == []                       # 登录态走 HTTP，不用浏览器
+    assert http.calls == ["https://www.jd.com/p/1"]
+    assert http.cookies == [{"pt_key": "abc", "pt_pin": "user"}]  # 登录 cookie 被注入
     assert db.touched == [("jd-user", datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc))]
 
 
 async def test_session_id_unknown_profile_returns_session_not_found(tmp_path):
-    stealth = FakeFetcher(_resp())
+    http = FakeFetcher(_resp())
     orch = _orchestrator(
-        tmp_path, db=FakeDB(profile=None), stealth=stealth,
-        profile_manager=FakeProfileManager(),
+        tmp_path, db=FakeDB(profile=None), http=http, cookies_loader=lambda s: {},
     )
 
     outcome = await orch.crawl(
@@ -359,14 +346,14 @@ async def test_session_id_unknown_profile_returns_session_not_found(tmp_path):
 
     assert outcome.status == "FAILED"
     assert outcome.error_code == "SESSION_NOT_FOUND"
-    assert stealth.calls == []
+    assert http.calls == []
 
 
 async def test_session_id_revoked_returns_session_expired(tmp_path):
-    stealth = FakeFetcher(_resp())
+    http = FakeFetcher(_resp())
     orch = _orchestrator(
-        tmp_path, db=FakeDB(profile=_profile(status="REVOKED")), stealth=stealth,
-        profile_manager=FakeProfileManager(),
+        tmp_path, db=FakeDB(profile=_profile(status="REVOKED")), http=http,
+        cookies_loader=lambda s: {},
     )
 
     outcome = await orch.crawl(
@@ -374,15 +361,15 @@ async def test_session_id_revoked_returns_session_expired(tmp_path):
     )
 
     assert outcome.error_code == "SESSION_EXPIRED"
-    assert stealth.calls == []
+    assert http.calls == []
 
 
 async def test_session_id_expired_profile_returns_session_expired(tmp_path):
     past = datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc) - timedelta(days=1)
-    stealth = FakeFetcher(_resp())
+    http = FakeFetcher(_resp())
     orch = _orchestrator(
-        tmp_path, db=FakeDB(profile=_profile(expires_at=past)), stealth=stealth,
-        profile_manager=FakeProfileManager(),
+        tmp_path, db=FakeDB(profile=_profile(expires_at=past)), http=http,
+        cookies_loader=lambda s: {},
     )
 
     outcome = await orch.crawl(
@@ -390,23 +377,23 @@ async def test_session_id_expired_profile_returns_session_expired(tmp_path):
     )
 
     assert outcome.error_code == "SESSION_EXPIRED"
-    assert stealth.calls == []
+    assert http.calls == []
 
 
 async def test_domain_default_session_id_used_when_request_has_none(tmp_path):
     from app.storage.database import DomainRule
 
-    stealth = FakeFetcher(_resp())
-    pm = FakeProfileManager(session_obj="jd-browser")
+    http = FakeFetcher(_resp())
     rule = DomainRule(domain="www.jd.com", default_session_id="jd-user")
     db = FakeDB(domain_rule=rule, profile=_profile())
-    orch = _orchestrator(tmp_path, db=db, stealth=stealth, profile_manager=pm)
+    orch = _orchestrator(
+        tmp_path, db=db, http=http, cookies_loader=lambda s: {"pt_key": "x"},
+    )
 
     outcome = await orch.crawl(CrawlRequest(url="https://www.jd.com/p/1"))
 
     assert outcome.status == "SUCCESS"
-    assert pm.used == ["jd-user"]
-    assert stealth.sessions == ["jd-browser"]
+    assert http.cookies == [{"pt_key": "x"}]
 
 
 async def test_cache_hit_returns_cached_without_fetching(tmp_path):

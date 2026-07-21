@@ -25,6 +25,7 @@ async def fetch_http(
     max_redirects: int = 5,
     retries: int = 1,
     validate: Callable[[str], None] = validate_public_http_url,
+    cookies: dict[str, str] | None = None,
 ) -> FetchResponse:
     """按第 14.1 节要求，每次重定向后都重新校验目标 URL，而不是信任
     底层 HTTP 客户端内置的自动跟随重定向（那样只会校验最初的 URL，
@@ -45,6 +46,7 @@ async def fetch_http(
                 follow_redirects=False,
                 retries=retries,
                 stealthy_headers=True,
+                cookies=cookies or {},
             )
         except RequestsError as exc:
             if exc.code == CurlECode.OPERATION_TIMEDOUT:

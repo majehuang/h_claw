@@ -109,10 +109,11 @@ class Orchestrator:
         browser_timeout_seconds: int = 60,
         stealth_timeout_seconds: int = 90,
         locale: str = "zh-CN",
-        profile_manager: Any = None,
+        cookies_loader: Callable[[str], dict[str, str]] | None = None,
     ):
         self._db = db
-        self._profile_manager = profile_manager
+        # 登录态 profile 的 cookie 加载器（session_id -> cookies dict）。
+        self._cookies_loader = cookies_loader
         self._data_dir = data_dir
         self._fetchers: dict[str, Fetcher] = {
             "http": http_fetch,
@@ -231,8 +232,9 @@ class Orchestrator:
         cache_key: str,
         rule: DomainRuleDefaults,
     ) -> CrawlOutcome:
-        """带登录态 profile 的抓取：经 ProfileManager 取持久浏览器会话，走隐身层。"""
-        if self._profile_manager is None:
+        """带登录态 profile 的抓取：加载 profile 的登录 cookie，走 HTTP 注入抓取
+        （第 14.1 节：登录 cookie + HTTP 即可访问登录墙页面，无需浏览器）。"""
+        if self._cookies_loader is None:
             return self._simple_error(
                 job_id, request, "SESSION_NOT_FOUND", "Profile 功能未启用。"
             )
@@ -247,10 +249,10 @@ class Orchestrator:
                 job_id, request, "SESSION_EXPIRED", "登录态已失效，请重新登录。"
             )
 
-        async with self._profile_manager.use(session_id) as browser_session:
-            outcome = await self._fetch_one_layer(
-                job_id, request, "stealth", cache_key, rule, session=browser_session
-            )
+        cookies = self._cookies_loader(session_id)
+        outcome = await self._fetch_one_layer(
+            job_id, request, "http", cache_key, rule, cookies=cookies
+        )
         await self._db.touch_profile_last_used(session_id, self._clock())
         return outcome
 
@@ -262,14 +264,15 @@ class Orchestrator:
         cache_key: str,
         rule: DomainRuleDefaults,
         *,
-        session: Any,
+        cookies: dict[str, str] | None = None,
     ) -> CrawlOutcome:
         try:
             response = await self._fetchers[mode_name](
                 request.url,
                 timeout_seconds=self._layer_timeouts[mode_name],
                 validate=self._validate,
-                session=session,
+                session=None,
+                cookies=cookies,
             )
         except FetchError as exc:
             if exc.error_code in _IMMEDIATE_TERMINAL_ERRORS:
