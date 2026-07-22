@@ -293,6 +293,20 @@ The service exposes two MCP tools, reachable by any MCP client over **stdio** or
 }
 ```
 
+### Give the agent a usage skill (recommended)
+
+To stop agents from misusing the server (writing their own Python scraper, or
+trying to bypass a login wall), this repo ships an **agent skill** at
+[`skills/crawler-mcp/`](./skills/crawler-mcp/SKILL.md) that defines the 5 tools,
+their return shapes, the decision flow, and the hard rules. Copy it into the
+agent runtime's skills directory:
+
+```bash
+cp -r skills/crawler-mcp .claude/skills/crawler-mcp   # Claude Code; for Hermes, its skills dir
+```
+
+See [`skills/README.md`](./skills/README.md) for details.
+
 ### Calling `crawl_url`
 
 Request:
