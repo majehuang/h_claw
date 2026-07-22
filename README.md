@@ -299,6 +299,18 @@ git pull && docker compose up --build -d   # 重新构建并滚动重启
 }
 ```
 
+### 给 Agent 装上使用技能（推荐）
+
+为避免 Agent 不了解工具用途（例如自己写 Python 脚本抓取、或试图绕过登录墙），本仓库
+在 [`skills/crawler-mcp/`](./skills/crawler-mcp/SKILL.md) 提供了一个 **Agent 技能**，
+定义 5 个工具的用途、返回结构、决策流程与铁律。把它拷到 Agent 运行时的技能目录即可：
+
+```bash
+cp -r skills/crawler-mcp .claude/skills/crawler-mcp   # Claude Code；Hermes 拷到其 skills 目录
+```
+
+详见 [`skills/README.md`](./skills/README.md)。
+
 ### 调用 `crawl_url`
 
 请求：
