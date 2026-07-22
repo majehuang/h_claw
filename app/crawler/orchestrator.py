@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from app.converter.pipeline import convert_html_to_markdown
+from app.crawler.cooldown import CooldownStore, InMemoryCooldownStore
 from app.crawler.detector import (
     INTERACTIVE_CHALLENGE_REASONS,
     DomainRuleDefaults,
@@ -121,6 +122,7 @@ class Orchestrator:
         stealth_timeout_seconds: int = 90,
         locale: str = "zh-CN",
         profile_manager: Any = None,
+        cooldown_store: CooldownStore | None = None,
     ):
         self._db = db
         # 登录态 profile 管理器：加载已登录的持久上下文（user_data_dir）起浏览器抓取。
@@ -154,8 +156,8 @@ class Orchestrator:
         self._domain_semaphores: dict[str, asyncio.Semaphore] = {}
         # Singleflight（HC-006）：同 cache_key 的并发请求合并为一次上游访问。
         self._inflight: dict[str, asyncio.Future] = {}
-        # 挑战熔断（HC-007）：domain|session → next_allowed_at。冷却期内不再打上游。
-        self._cooldowns: dict[str, datetime] = {}
+        # 挑战熔断（HC-007/HC-002）：冷却态经 CooldownStore 存取，默认进程内，生产用 DB 持久。
+        self._cooldown_store: CooldownStore = cooldown_store or InMemoryCooldownStore()
 
     async def crawl(self, request: CrawlRequest, session: Any = None) -> CrawlOutcome:
         job_id = self._job_id_factory()
@@ -179,7 +181,7 @@ class Orchestrator:
 
         # 挑战熔断（HC-007/UT-020,UT-021）：冷却期内直接返回 COOLDOWN，不打上游、不重开挑战。
         domain_key = f"{domain}|{effective_session_id or ''}"
-        remaining = self._cooldown_remaining(domain_key)
+        remaining = await self._cooldown_remaining(domain_key)
         if remaining is not None:
             return self._cooldown_outcome(job_id, request, remaining)
 
@@ -246,32 +248,28 @@ class Orchestrator:
         finally:
             self._active -= 1
 
-    def _cooldown_remaining(self, domain_key: str) -> int | None:
-        """冷却剩余秒数；已过期则清理并返回 None（HC-007）。"""
-        deadline = self._cooldowns.get(domain_key)
-        if deadline is None:
-            return None
-        now = self._clock()
-        if now >= deadline:
-            self._cooldowns.pop(domain_key, None)
-            return None
-        return max(1, int((deadline - now).total_seconds()))
+    async def _cooldown_remaining(self, domain_key: str) -> int | None:
+        """冷却剩余秒数；已过期返回 None（HC-007，经 CooldownStore）。"""
+        return await self._cooldown_store.remaining_seconds(domain_key, self._clock())
 
-    def _set_cooldown(self, domain_key: str, seconds: int) -> None:
-        self._cooldowns[domain_key] = self._clock() + timedelta(seconds=seconds)
+    async def _set_cooldown(
+        self, domain_key: str, seconds: int, reason: str | None
+    ) -> None:
+        until = self._clock() + timedelta(seconds=seconds)
+        await self._cooldown_store.arm(domain_key, until, reason)
 
-    def _clear_cooldown(self, domain_key: str) -> None:
+    async def _clear_cooldown(self, domain_key: str) -> None:
         # 成功恢复只清除对应会话的熔断，不影响其他账号（HC-007）。
-        self._cooldowns.pop(domain_key, None)
+        await self._cooldown_store.clear(domain_key)
 
     def _cooldown_for_reason(
         self, verdict_reason: str | None, last_error: FetchError | None
-    ) -> int | None:
-        """按原因选择冷却时长：交互式挑战 > 403/503 阻断 > 429 限频（HC-007）。"""
+    ) -> tuple[int, str] | None:
+        """按原因选择冷却时长与标签：交互式挑战 > 403/503 阻断（HC-007）。"""
         if verdict_reason in INTERACTIVE_CHALLENGE_REASONS:
-            return self._challenge_cooldown
+            return self._challenge_cooldown, "challenge"
         if verdict_reason == "blocked_status":
-            return self._blocked_cooldown
+            return self._blocked_cooldown, "blocked"
         return None
 
     def _cooldown_outcome(
@@ -338,7 +336,7 @@ class Orchestrator:
 
             verdict = detect(response, rule)
             if verdict.ok:
-                self._clear_cooldown(domain_key)  # 成功即解除该会话熔断（HC-007）
+                await self._clear_cooldown(domain_key)  # 成功即解除该会话熔断（HC-007）
                 return await self._finalize(
                     job_id, request, response, mode_name, cache_key
                 )
@@ -411,7 +409,7 @@ class Orchestrator:
             else:
                 verdict = detect(response, rule)
                 if verdict.ok:
-                    self._clear_cooldown(domain_key)
+                    await self._clear_cooldown(domain_key)
                     outcome = await self._finalize(
                         job_id, request, response, "stealth", cache_key
                     )
@@ -517,7 +515,8 @@ class Orchestrator:
         # 挑战/阻断进入熔断，避免相同请求立刻重打上游（HC-007）。
         cooldown = self._cooldown_for_reason(verdict_reason, last_error)
         if cooldown is not None:
-            self._set_cooldown(domain_key, cooldown)
+            seconds, reason = cooldown
+            await self._set_cooldown(domain_key, seconds, reason)
 
         if verdict_reason is not None:
             status, error_code = _DETECTION_TERMINAL.get(

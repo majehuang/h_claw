@@ -8,6 +8,7 @@ from typing import Any
 from app.config import Settings
 from app.crawler.browser_fetcher import fetch_browser
 from app.crawler.browser_pool import BrowserPool
+from app.crawler.cooldown import DbCooldownStore
 from app.crawler.detector import DomainRuleDefaults
 from app.crawler.browser_login import close_browser_login, open_browser_login
 from app.crawler.http_fetcher import fetch_http
@@ -167,6 +168,7 @@ async def build_service(settings: Settings):
         challenge_cooldown_seconds=settings.challenge_cooldown_seconds,
         rate_limit_cooldown_seconds=settings.rate_limit_cooldown_seconds,
         blocked_cooldown_seconds=settings.blocked_cooldown_seconds,
+        cooldown_store=DbCooldownStore(database),
         http_timeout_seconds=settings.http_timeout_seconds,
         browser_timeout_seconds=settings.browser_timeout_seconds,
         stealth_timeout_seconds=settings.stealth_timeout_seconds,
