@@ -38,6 +38,7 @@ _STATUS_MAP = {
     "SCANNED": LoginState.SCANNED,
     "SUCCESS": LoginState.SUCCESS,
     "EXPIRED": LoginState.EXPIRED,
+    "FAILED": LoginState.FAILED,
 }
 
 
@@ -118,6 +119,9 @@ class LoginManager:
             return await self._finish(login_id, entry, LoginState.SUCCESS)
         if status == LoginState.EXPIRED:
             return await self._finish(login_id, entry, LoginState.EXPIRED)
+        # HC-011：适配器判定登录落到非允许域名等硬失败 → 关闭上下文、不封存 profile。
+        if status == LoginState.FAILED:
+            return await self._finish(login_id, entry, LoginState.FAILED)
 
         entry.login = replace(entry.login, status=status)
         return entry.login

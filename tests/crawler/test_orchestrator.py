@@ -131,8 +131,10 @@ async def test_escalates_http_to_browser_on_short_content(tmp_path):
 
 
 async def test_escalates_to_stealth_when_browser_still_blocked(tmp_path):
-    http = FakeFetcher(_resp(status=403, html=BLOCKED_HTML))
-    browser = FakeFetcher(_resp(status=403, html=BLOCKED_HTML))
+    # 403 阻断状态（非交互式挑战）仍应逐层升级，stealth 可能绕过 bot 检测。
+    blocked = _resp(status=403, html="<html><body>403 forbidden</body></html>")
+    http = FakeFetcher(blocked)
+    browser = FakeFetcher(blocked)
     stealth = FakeFetcher(_resp())
     orch = _orchestrator(tmp_path, http=http, browser=browser, stealth=stealth)
 
@@ -157,6 +159,23 @@ async def test_all_layers_blocked_returns_blocked(tmp_path):
     assert outcome.status == "BLOCKED"
     assert outcome.error_code == "UPSTREAM_BLOCKED"
     assert outcome.retriable is False
+
+
+async def test_interactive_challenge_stops_escalation(tmp_path):
+    # HC-005/UT-019：http 层即命中交互式挑战（滑块），不得再调用 browser/stealth。
+    captcha = _resp(html=BLOCKED_HTML)
+    http = FakeFetcher(captcha)
+    browser = FakeFetcher(_resp())
+    stealth = FakeFetcher(_resp())
+    orch = _orchestrator(tmp_path, http=http, browser=browser, stealth=stealth)
+
+    outcome = await orch.crawl(CrawlRequest(url="https://shop.example.com/p/1"))
+
+    assert outcome.status == "CAPTCHA_REQUIRED"
+    assert outcome.error_code == "CHALLENGE_NOT_SOLVED"
+    assert http.calls == ["https://shop.example.com/p/1"]
+    assert browser.calls == []   # 交互式挑战后停止升级
+    assert stealth.calls == []
 
 
 async def test_captcha_on_last_layer_returns_captcha_required(tmp_path):

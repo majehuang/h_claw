@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     max_concurrency: int = 5
     max_browser_pages: int = 3
     max_per_domain: int = 1
+    # 单域名闸门等待上限（HC-006）：超时即返回 RATE_LIMITED，避免占满 MCP 调用生命周期。
+    domain_wait_seconds: int = 30
+    # 挑战/阻断熔断冷却（HC-007）：冷却期内相同 domain+session 不再打上游。
+    challenge_cooldown_seconds: int = 600
+    rate_limit_cooldown_seconds: int = 120
+    blocked_cooldown_seconds: int = 300
 
     http_timeout_seconds: int = 15
     browser_timeout_seconds: int = 60

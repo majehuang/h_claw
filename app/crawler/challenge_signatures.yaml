@@ -25,3 +25,15 @@ login_path_patterns:
 captcha_domains:
   - "challenges.cloudflare.com"
   - "captcha-delivery.com"
+
+# 站点适配器：站点专属的交互式挑战特征，只在最终 host 命中 domains 时生效，
+# 不污染通用 detector（HC-005）。新增站点只在此加一条，不改 detector.py。
+site_adapters:
+  - domains: ["taobao.com", "tmall.com"]
+    provider: "taobao-slider"
+    keywords: ["请拖动下方滑块", "向右滑动验证", "滑动验证"]
+    selectors: ["#nc_1_wrapper", ".nc-container", ".nc_iconfont.btn_slide"]
+  - domains: ["smzdm.com"]
+    provider: "smzdm-verify"
+    keywords: ["完成下方验证后继续访问"]
+    selectors: ["#geetest_captcha"]

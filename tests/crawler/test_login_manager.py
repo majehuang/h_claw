@@ -70,6 +70,18 @@ async def test_begin_opens_login_and_returns_qr():
     assert opened[0][0] == "www.jd.com"
 
 
+async def test_poll_failed_closes_without_sealing_profile():
+    # HC-011：适配器判定登录落到非允许域名 → FAILED，关闭上下文且不封存 profile。
+    mgr, _, closed = _manager(FakeAdapter(statuses=["FAILED"]))
+    login = await mgr.begin("https://www.jd.com/login")
+
+    result = await mgr.poll(login.login_id)
+
+    assert result.status == LoginState.FAILED
+    assert result.session_id is None            # 未封存 profile
+    assert closed == [(closed[0][0], False)]    # closer 以 success=False 关闭上下文
+
+
 async def test_poll_pending_stays_qr_ready():
     mgr, _, _ = _manager(FakeAdapter(statuses=["PENDING"]))
     await mgr.begin("https://www.jd.com/login")

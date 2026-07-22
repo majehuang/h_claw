@@ -118,7 +118,48 @@ class Database:
         async with self._pool.acquire() as conn:
             await conn.execute(
                 f"TRUNCATE {_SCHEMA}.crawl_results, {_SCHEMA}.crawl_domain_rules, "
-                f"{_SCHEMA}.account_profiles"
+                f"{_SCHEMA}.account_profiles, {_SCHEMA}.challenge_cooldowns"
+            )
+
+    async def get_challenge_cooldown(
+        self, domain_key: str, now: datetime
+    ) -> datetime | None:
+        """返回仍在冷却期内的 next_allowed_at；已过期或不存在返回 None（HC-002/007）。"""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"""
+                SELECT next_allowed_at FROM {_SCHEMA}.challenge_cooldowns
+                WHERE domain_key = $1 AND next_allowed_at > $2
+                """,
+                domain_key,
+                now,
+            )
+        return row["next_allowed_at"] if row else None
+
+    async def upsert_challenge_cooldown(
+        self, domain_key: str, next_allowed_at: datetime, reason: str | None = None
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                f"""
+                INSERT INTO {_SCHEMA}.challenge_cooldowns
+                    (domain_key, next_allowed_at, reason)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (domain_key) DO UPDATE
+                SET next_allowed_at = EXCLUDED.next_allowed_at,
+                    reason = EXCLUDED.reason,
+                    created_at = now()
+                """,
+                domain_key,
+                next_allowed_at,
+                reason,
+            )
+
+    async def clear_challenge_cooldown(self, domain_key: str) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                f"DELETE FROM {_SCHEMA}.challenge_cooldowns WHERE domain_key = $1",
+                domain_key,
             )
 
     async def upsert_crawl_result(self, record: CrawlResultRecord) -> None:

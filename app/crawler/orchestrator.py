@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -6,7 +7,13 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from app.converter.pipeline import convert_html_to_markdown
-from app.crawler.detector import DomainRuleDefaults, FetchResponse, detect
+from app.crawler.cooldown import CooldownStore, InMemoryCooldownStore
+from app.crawler.detector import (
+    INTERACTIVE_CHALLENGE_REASONS,
+    DomainRuleDefaults,
+    FetchResponse,
+    detect,
+)
 from app.crawler.http_fetcher import FetchError
 from app.security.url_validator import URLValidationError
 from app.storage.cache import compute_cache_key
@@ -105,11 +112,17 @@ class Orchestrator:
         cache_ttl_seconds: int,
         result_ttl_seconds: int,
         max_concurrency: int,
+        max_per_domain: int = 1,
+        domain_wait_seconds: int = 30,
+        challenge_cooldown_seconds: int = 600,
+        rate_limit_cooldown_seconds: int = 120,
+        blocked_cooldown_seconds: int = 300,
         http_timeout_seconds: int = 15,
         browser_timeout_seconds: int = 60,
         stealth_timeout_seconds: int = 90,
         locale: str = "zh-CN",
         profile_manager: Any = None,
+        cooldown_store: CooldownStore | None = None,
     ):
         self._db = db
         # 登录态 profile 管理器：加载已登录的持久上下文（user_data_dir）起浏览器抓取。
@@ -132,33 +145,23 @@ class Orchestrator:
         self._cache_ttl = cache_ttl_seconds
         self._result_ttl = result_ttl_seconds
         self._max_concurrency = max_concurrency
+        self._max_per_domain = max_per_domain
+        self._domain_wait_seconds = domain_wait_seconds
+        self._challenge_cooldown = challenge_cooldown_seconds
+        self._rate_limit_cooldown = rate_limit_cooldown_seconds
+        self._blocked_cooldown = blocked_cooldown_seconds
         self._locale = locale
         self._active = 0
+        # 单域名并发闸门（HC-006）：每个域名键一个 Semaphore，容量 max_per_domain。
+        self._domain_semaphores: dict[str, asyncio.Semaphore] = {}
+        # Singleflight（HC-006）：同 cache_key 的并发请求合并为一次上游访问。
+        self._inflight: dict[str, asyncio.Future] = {}
+        # 挑战熔断（HC-007/HC-002）：冷却态经 CooldownStore 存取，默认进程内，生产用 DB 持久。
+        self._cooldown_store: CooldownStore = cooldown_store or InMemoryCooldownStore()
 
     async def crawl(self, request: CrawlRequest, session: Any = None) -> CrawlOutcome:
         job_id = self._job_id_factory()
 
-        # 非阻塞并发闸门：单事件循环线程内 check-then-increment 之间无 await，天然原子。
-        if self._active >= self._max_concurrency:
-            return CrawlOutcome(
-                status="FAILED",
-                job_id=job_id,
-                source_url=request.url,
-                error_code="RATE_LIMITED",
-                error_message="抓取服务并发已满，请稍后重试。",
-                retriable=True,
-                retry_after_seconds=5,
-            )
-
-        self._active += 1
-        try:
-            return await self._crawl_inner(request, job_id, session)
-        finally:
-            self._active -= 1
-
-    async def _crawl_inner(
-        self, request: CrawlRequest, job_id: str, session: Any
-    ) -> CrawlOutcome:
         try:
             self._validate(request.url)
         except URLValidationError as exc:
@@ -176,9 +179,139 @@ class Orchestrator:
             if cached is not None:
                 return self._outcome_from_cached(cached)
 
+        # 挑战熔断（HC-007/UT-020,UT-021）：冷却期内直接返回 COOLDOWN，不打上游、不重开挑战。
+        domain_key = f"{domain}|{effective_session_id or ''}"
+        remaining = await self._cooldown_remaining(domain_key)
+        if remaining is not None:
+            return self._cooldown_outcome(job_id, request, remaining)
+
+        # Singleflight（HC-006/UT-018）：同 cache_key 已有在途请求时，直接复用其结果，
+        # 不再重复打上游。shield 防止本 waiter 被取消时波及 leader。
+        inflight = self._inflight.get(cache_key)
+        if inflight is not None:
+            return await asyncio.shield(inflight)
+
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future = loop.create_future()
+        self._inflight[cache_key] = future
+        try:
+            outcome = await self._run_leader(
+                request, job_id, session, domain, rule,
+                preferred_mode, effective_session_id, cache_key,
+            )
+            if not future.done():
+                future.set_result(outcome)
+            return outcome
+        except BaseException as exc:
+            if not future.done():
+                future.set_exception(exc)
+            raise
+        finally:
+            self._inflight.pop(cache_key, None)
+
+    async def _run_leader(
+        self,
+        request: CrawlRequest,
+        job_id: str,
+        session: Any,
+        domain: str,
+        rule: DomainRuleDefaults,
+        preferred_mode: str,
+        effective_session_id: str | None,
+        cache_key: str,
+    ) -> CrawlOutcome:
+        # 非阻塞全局并发闸门：单事件循环线程内 check-then-increment 之间无 await，天然原子。
+        if self._active >= self._max_concurrency:
+            return self._rate_limited(job_id, request)
+
+        self._active += 1
+        try:
+            # 单域名并发闸门（HC-006/UT-016）：登录态请求按 domain+session 分桶，
+            # 避免同域多请求放大触发目标站频率限制。等待有界，超时即返回 RATE_LIMITED。
+            domain_key = f"{domain}|{effective_session_id or ''}"
+            semaphore = self._domain_semaphores.setdefault(
+                domain_key, asyncio.Semaphore(self._max_per_domain)
+            )
+            try:
+                await asyncio.wait_for(
+                    semaphore.acquire(), timeout=self._domain_wait_seconds
+                )
+            except asyncio.TimeoutError:
+                return self._rate_limited(job_id, request)
+            try:
+                return await self._crawl_inner(
+                    request, job_id, session, rule, preferred_mode,
+                    effective_session_id, cache_key,
+                )
+            finally:
+                semaphore.release()
+        finally:
+            self._active -= 1
+
+    async def _cooldown_remaining(self, domain_key: str) -> int | None:
+        """冷却剩余秒数；已过期返回 None（HC-007，经 CooldownStore）。"""
+        return await self._cooldown_store.remaining_seconds(domain_key, self._clock())
+
+    async def _set_cooldown(
+        self, domain_key: str, seconds: int, reason: str | None
+    ) -> None:
+        until = self._clock() + timedelta(seconds=seconds)
+        await self._cooldown_store.arm(domain_key, until, reason)
+
+    async def _clear_cooldown(self, domain_key: str) -> None:
+        # 成功恢复只清除对应会话的熔断，不影响其他账号（HC-007）。
+        await self._cooldown_store.clear(domain_key)
+
+    def _cooldown_for_reason(
+        self, verdict_reason: str | None, last_error: FetchError | None
+    ) -> tuple[int, str] | None:
+        """按原因选择冷却时长与标签：交互式挑战 > 403/503 阻断（HC-007）。"""
+        if verdict_reason in INTERACTIVE_CHALLENGE_REASONS:
+            return self._challenge_cooldown, "challenge"
+        if verdict_reason == "blocked_status":
+            return self._blocked_cooldown, "blocked"
+        return None
+
+    def _cooldown_outcome(
+        self, job_id: str, request: CrawlRequest, remaining: int
+    ) -> CrawlOutcome:
+        return CrawlOutcome(
+            status="COOLDOWN",
+            job_id=job_id,
+            source_url=request.url,
+            error_code="CHALLENGE_COOLDOWN",
+            error_message=f"该站点处于挑战冷却期，请 {remaining} 秒后重试。",
+            retriable=True,
+            retry_after_seconds=remaining,
+        )
+
+    def _rate_limited(self, job_id: str, request: CrawlRequest) -> CrawlOutcome:
+        return CrawlOutcome(
+            status="FAILED",
+            job_id=job_id,
+            source_url=request.url,
+            error_code="RATE_LIMITED",
+            error_message="抓取服务并发已满，请稍后重试。",
+            retriable=True,
+            retry_after_seconds=5,
+        )
+
+    async def _crawl_inner(
+        self,
+        request: CrawlRequest,
+        job_id: str,
+        session: Any,
+        rule: DomainRuleDefaults,
+        preferred_mode: str,
+        effective_session_id: str | None,
+        cache_key: str,
+    ) -> CrawlOutcome:
+        domain = urlsplit(request.url).hostname or ""
+        domain_key = f"{domain}|{effective_session_id or ''}"
+
         if effective_session_id is not None:
             return await self._crawl_with_profile(
-                job_id, request, effective_session_id, cache_key, rule
+                job_id, request, effective_session_id, cache_key, rule, domain_key
             )
 
         layers = _resolve_layers(request.mode, preferred_mode)
@@ -203,13 +336,18 @@ class Orchestrator:
 
             verdict = detect(response, rule)
             if verdict.ok:
+                await self._clear_cooldown(domain_key)  # 成功即解除该会话熔断（HC-007）
                 return await self._finalize(
                     job_id, request, response, mode_name, cache_key
                 )
             last_verdict_reason = verdict.reason
+            # HC-005/UT-019：检测到交互式挑战（滑块/验证码）后立即停止自动升级——
+            # 升级到 stealth 也解不了人工挑战，只会对目标站放大请求。
+            if verdict.is_interactive_challenge:
+                break
 
         return await self._terminal_outcome(
-            job_id, request, cache_key, last_verdict_reason, last_error
+            job_id, request, cache_key, last_verdict_reason, last_error, domain_key
         )
 
     async def _resolve_rule(
@@ -231,6 +369,7 @@ class Orchestrator:
         session_id: str,
         cache_key: str,
         rule: DomainRuleDefaults,
+        domain_key: str,
     ) -> CrawlOutcome:
         """带登录态 profile 的抓取：经 ProfileManager 加载已登录的持久上下文
         （user_data_dir），用该上下文起隐身浏览器抓取（浏览器天然已登录，JS 渲染的
@@ -265,17 +404,18 @@ class Orchestrator:
                     )
                 else:
                     outcome = await self._terminal_outcome(
-                        job_id, request, cache_key, None, exc
+                        job_id, request, cache_key, None, exc, domain_key
                     )
             else:
                 verdict = detect(response, rule)
                 if verdict.ok:
+                    await self._clear_cooldown(domain_key)
                     outcome = await self._finalize(
                         job_id, request, response, "stealth", cache_key
                     )
                 else:
                     outcome = await self._terminal_outcome(
-                        job_id, request, cache_key, verdict.reason, None
+                        job_id, request, cache_key, verdict.reason, None, domain_key
                     )
         await self._db.touch_profile_last_used(session_id, self._clock())
         return outcome
@@ -364,12 +504,19 @@ class Orchestrator:
         cache_key: str,
         verdict_reason: str | None,
         last_error: FetchError | None,
+        domain_key: str,
     ) -> CrawlOutcome:
         if last_error is not None and last_error.error_code == "FETCH_TIMEOUT":
             return await self._persist_failure(
                 job_id, request, cache_key, "TIMEOUT", "FETCH_TIMEOUT",
                 str(last_error), retriable=True,
             )
+
+        # 挑战/阻断进入熔断，避免相同请求立刻重打上游（HC-007）。
+        cooldown = self._cooldown_for_reason(verdict_reason, last_error)
+        if cooldown is not None:
+            seconds, reason = cooldown
+            await self._set_cooldown(domain_key, seconds, reason)
 
         if verdict_reason is not None:
             status, error_code = _DETECTION_TERMINAL.get(
