@@ -34,7 +34,10 @@ This service solves all of that inside one self-contained service: **the agent j
 - **HTML → Markdown**: strips noise, keeps title / price / specs / description / image links, and extracts structured data.
 - **Prompt-injection defense**: page content is always treated as untrusted external data; the Markdown front matter is stamped `untrusted_external_content: true` (non-overridable).
 - **Caching & result storage**: PostgreSQL holds the cache and job metadata, the local volume `/data` holds Markdown; small results are returned directly, large ones are read in pages.
-- **Concurrency control**: `asyncio.Semaphore` + a browser page pool; over the limit returns `RATE_LIMITED`.
+- **Concurrency control & request coalescing**: a global concurrency gate + **per-domain concurrency limit** (`max_per_domain`) + **singleflight** (concurrent requests on the same cache key collapse into a single upstream fetch); over the limit returns `RATE_LIMITED`.
+- **Challenge detection & governance**: an interactive challenge (slider/CAPTCHA) **stops layer escalation immediately** (escalating can't solve it and only amplifies requests upstream); detection evidence is standardized (`provider` / `matched_signal`, short tokens only — never full HTML/cookies/PII); site-specific signals are gated by host so rules never cross-fire between domains.
+- **Challenge circuit breaker (negative cache)**: after a challenge/block, a cooldown is recorded per `domain+session`; within the cooldown, identical requests return `COOLDOWN` without hitting upstream, and success clears only that session's breaker. Cooldown state is **persisted in PostgreSQL and survives restarts**.
+- **Hardened login validation**: after QR login, "left the login page" is no longer treated as success — it must also land on an allowlisted host, not be a security/challenge interstitial, and (if configured) show a logged-in DOM marker; landing on an external domain fails and does not seal a profile.
 - **Container isolation**: read-only root filesystem, tmpfs, `cap_drop ALL`, `no-new-privileges`, non-root (uid 1000), resource limits.
 - **Observability**: `/healthz`, `/metrics` (Prometheus), structured logging + sensitive-data redaction.
 
@@ -68,7 +71,9 @@ The orchestrator tries layers from light to heavy on demand; the detector judges
 
 > L2 and L3 share the same playwright chromium binary (patchright reuses it), so no second browser is needed inside the container.
 
-**Detector 7-step chain**: `status code → redirect target → challenge-page markers → SPA shell → content too short → missing structured signals → URL mismatch`. Any hit triggers escalation or a terminal verdict.
+**Detector chain**: `status code → redirect target → site-adapter challenge signals → generic challenge markers → SPA shell → content too short → missing structured signals → URL mismatch`. Any hit triggers escalation or a terminal verdict. On an **interactive challenge** (slider/CAPTCHA) it **does not escalate** — escalating to stealth can't solve a human challenge and only amplifies requests upstream; the result carries standardized evidence (`provider` / `matched_signal`, redacted). Site-specific signals (e.g. Taobao's slider) are gated by the final host and never cross-fire to other domains.
+
+**Challenge circuit breaker**: an interactive challenge / blocked status records a cooldown per `domain+session` (`challenge_cooldowns` table, persisted across restarts); within the cooldown, identical requests return `COOLDOWN` without hitting upstream, and success clears only that session's breaker.
 
 ### Directory layout
 
@@ -80,8 +85,9 @@ app/
 ├── security/
 │   └── url_validator.py  # Public HTTP URL validation + SSRF range blocking
 ├── crawler/
-│   ├── orchestrator.py   # State machine: http → browser → stealth, concurrency gate & terminal mapping
-│   ├── detector.py       # 7-step escalation chain
+│   ├── orchestrator.py   # State machine: http → browser → stealth; concurrency gate / per-domain limit / singleflight / challenge breaker
+│   ├── detector.py       # escalation chain + challenge evidence (provider/matched_signal) + site adapters
+│   ├── cooldown.py       # challenge circuit-breaker cooldown store (in-memory / DB-persisted)
 │   ├── http_fetcher.py   # L1, per-hop redirect re-validation
 │   ├── browser_fetcher.py / stealth_fetcher.py / browser_fetch_common.py  # L2 / L3
 │   └── browser_pool.py   # Page pool + semaphore + 100-task restart recycling
@@ -96,7 +102,7 @@ app/
 
 ### Data storage
 
-- **PostgreSQL** (deployed separately, connected via `DATABASE_URL`): dedicated `hermes_crawler` schema and low-privilege `hermes_crawler_svc` role; tables `crawl_results` (cache & job metadata) and `crawl_domain_rules` (per-domain configurable fetch strategy).
+- **PostgreSQL** (deployed separately, connected via `DATABASE_URL`): dedicated `hermes_crawler` schema and low-privilege `hermes_crawler_svc` role; tables `crawl_results` (cache & job metadata), `crawl_domain_rules` (per-domain configurable fetch strategy), `account_profiles` (login profile metadata), and `challenge_cooldowns` (challenge circuit-breaker state — metadata only, no cookies/tokens).
 - **Local volume `/data`**: persists Markdown and image files.
 
 ---
@@ -123,7 +129,7 @@ Read a finished result in pages: `job_id`, `offset`, `max_chars`.
 
 ### Error responses
 
-Structured `error_code` enum: `INVALID_URL`, `SSRF_BLOCKED`, `RATE_LIMITED`, `UPSTREAM_BLOCKED`, `CHALLENGE_NOT_SOLVED`, `LOGIN_WALL`, `FETCH_TIMEOUT`, `CONTENT_TOO_LARGE`, `CONVERSION_FAILED`, `INTERNAL_ERROR`.
+Structured `error_code` enum: `INVALID_URL`, `SSRF_BLOCKED`, `RATE_LIMITED`, `UPSTREAM_BLOCKED`, `CHALLENGE_NOT_SOLVED`, `CHALLENGE_COOLDOWN`, `LOGIN_WALL`, `FETCH_TIMEOUT`, `CONTENT_TOO_LARGE`, `CONVERSION_FAILED`, `INTERNAL_ERROR`.
 
 ---
 
@@ -171,7 +177,9 @@ Main environment variables (see `app/config.py` and `.env.example` for the full 
 | `MCP_HOST` / `MCP_PORT` | Listen address for the HTTP transport |
 | `DATABASE_URL` | PostgreSQL connection string (DB wiring is skipped if unset) |
 | `DATA_DIR` | Result storage directory, default `/data` |
-| `MAX_CONCURRENCY` / `MAX_BROWSER_PAGES` / `MAX_PER_DOMAIN` | Concurrency control |
+| `MAX_CONCURRENCY` / `MAX_BROWSER_PAGES` / `MAX_PER_DOMAIN` | Concurrency control (`MAX_PER_DOMAIN` is the per-domain concurrency cap, default 1) |
+| `DOMAIN_WAIT_SECONDS` | Max wait on the per-domain gate, default 30; returns `RATE_LIMITED` on timeout |
+| `CHALLENGE_COOLDOWN_SECONDS` / `RATE_LIMIT_COOLDOWN_SECONDS` / `BLOCKED_COOLDOWN_SECONDS` | Circuit-breaker cooldown for challenge / 429 / 403·503 (defaults 600 / 120 / 300) |
 | `HTTP_/BROWSER_/STEALTH_TIMEOUT_SECONDS` | Per-layer timeouts |
 | `CACHE_TTL_SECONDS` / `RESULT_TTL_SECONDS` | Cache / result retention |
 | `MAX_INLINE_MARKDOWN_BYTES` / `MAX_MARKDOWN_BYTES` / `MAX_HTML_BYTES` | Size limits |
@@ -312,6 +320,18 @@ A large result (≥50KB) is not inlined — it returns only the `job_id` plus me
 ```json
 { "job_id": "cr_...", "status": "BLOCKED", "error_code": "SSRF_BLOCKED", "error_message": "..." }
 ```
+
+Main `status` / `error_code`:
+
+| status | error_code | Meaning |
+|---|---|---|
+| `SUCCESS` | — | Fetch succeeded; returns Markdown or a `job_id` |
+| `BLOCKED` | `SSRF_BLOCKED` / `UPSTREAM_BLOCKED` | Hit SSRF defense / blocked at every layer |
+| `CAPTCHA_REQUIRED` | `CHALLENGE_NOT_SOLVED` | Hit an interactive challenge (slider/CAPTCHA); **no auto-escalation/retry** |
+| `LOGIN_REQUIRED` | `LOGIN_WALL` | Login needed (retry with a `session_id` from QR login) |
+| `COOLDOWN` | `CHALLENGE_COOLDOWN` | This `domain+session` is in a challenge cooldown; `retry_after_seconds` gives the remaining time, no upstream hit meanwhile |
+| `FAILED` | `RATE_LIMITED` | Global/per-domain gate full; retry after `retry_after_seconds` |
+| `TIMEOUT` | `FETCH_TIMEOUT` | Fetch timed out; retriable |
 
 ### Calling `read_crawl_result`
 
