@@ -68,7 +68,7 @@ CREATE SCHEMA IF NOT EXISTS hermes_crawler AUTHORIZATION hermes_crawler_svc;
 --   GRANT USAGE, CREATE ON SCHEMA hermes_crawler TO hermes_crawler_svc;
 ```
 
-> 该角色需对 `hermes_crawler` schema 有 `CREATE` 权限，供服务启动时自动建表。表结构随版本演进（`0001_init` → `0002_account_profiles` → `0003_domain_default_session`），每次启动幂等应用。
+> 该角色需对 `hermes_crawler` schema 有 `CREATE` 权限，供服务启动时自动建表。表结构随版本演进（`0001_init` → `0002_account_profiles` → `0003_domain_default_session` → `0004_challenge_cooldowns`），每次启动幂等应用。
 
 ---
 
@@ -234,6 +234,24 @@ uv run python -m app.main            # MCP_TRANSPORT 默认 stdio
 ```
 
 > Claude Desktop 配置文件：macOS `~/Library/Application Support/Claude/claude_desktop_config.json`。Claude Code 用 `claude mcp add` 或项目 `.mcp.json`。
+
+### 给 Agent 装上使用技能（强烈推荐）
+
+只连上 MCP 还不够：实际使用中 Agent 常常不清楚工具用途，遇到抓取需求自己写 Python 脚本，或遇到登录墙时试图"绕过"。本仓库在 [`skills/crawler-mcp/`](./skills/crawler-mcp/SKILL.md) 提供了一个 **Agent 技能**（兼容 Claude Code / Agent Skills 格式），定义 5 个工具的用途、返回结构、`status→动作` 决策表、扫码登录流程与铁律（**直接调用 MCP 工具、绝不写脚本、绝不绕过登录墙/验证码**）。
+
+把技能目录拷进 Agent 运行时的技能目录即可，靠 `SKILL.md` frontmatter 的触发词按需自动激活，无需 Agent 手动调用：
+
+```bash
+# 项目级（仅该项目的 Agent 可见）
+cp -r skills/crawler-mcp <agent-repo>/.claude/skills/crawler-mcp
+# 或用户级（该机器上所有会话可见）
+cp -r skills/crawler-mcp ~/.claude/skills/crawler-mcp
+# Hermes / 其他运行时：拷到其对应的 skills 目录
+```
+
+装好后确认目录结构为 `.claude/skills/crawler-mcp/SKILL.md`。生效前提有两点：**①技能被发现**（`SKILL.md` 在 `skills/<name>/` 下、frontmatter 合法）；**②MCP 已连接**（技能只讲"怎么用工具"，工具本身来自上面接入的 `crawler` MCP）。详见 [`skills/README.md`](./skills/README.md)。
+
+> 容器部署（形态 A）下 MCP 与 Agent 通常分处两端：技能装在**调用方 Agent 的运行时**，不是 crawler-mcp 容器内。若 crawler-mcp 与 Agent 同机、且从本仓库源码运行，直接用仓库内 `skills/` 即可。
 
 ---
 
