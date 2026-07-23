@@ -126,11 +126,16 @@ class LoginManager:
         entry.login = replace(entry.login, status=status)
         return entry.login
 
-    def get_qr_png(self, login_id: str) -> bytes | None:
-        """供 /qr/{login_id}.png 只读端点使用（HC-QR-1）：登录结束后条目已从
-        注册表移除，天然限定了可下载窗口，无需额外过期判断。"""
+    def get_qr_entry(self, login_id: str) -> LoginSession | None:
+        """按 login_id 取当前在途登录条目（HC-QR-1/HC-QR-3）：登录结束后条目
+        已从注册表移除，天然限定了可访问窗口，无需额外过期判断。"""
         entry = self._entries.get(login_id)
-        return entry.login.qr_png if entry is not None else None
+        return entry.login if entry is not None else None
+
+    def get_qr_png(self, login_id: str) -> bytes | None:
+        """供 /qr/{login_id} 只读端点使用（HC-QR-1）。"""
+        login = self.get_qr_entry(login_id)
+        return login.qr_png if login is not None else None
 
     async def cancel(self, login_id: str) -> bool:
         entry = self._entries.get(login_id)

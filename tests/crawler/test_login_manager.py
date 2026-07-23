@@ -159,3 +159,19 @@ async def test_get_qr_png_returns_none_after_cancel():
     await mgr.cancel("lg_test")
 
     assert mgr.get_qr_png("lg_test") is None
+
+
+async def test_get_qr_entry_returns_session_with_domain_and_png():
+    mgr, _, _ = _manager(FakeAdapter())
+    await mgr.begin("https://www.jd.com/login")
+
+    entry = mgr.get_qr_entry("lg_test")
+
+    assert entry.login_id == "lg_test"
+    assert entry.domain == "www.jd.com"
+    assert entry.qr_png == b"PNGDATA"
+
+
+async def test_get_qr_entry_returns_none_for_unknown_id():
+    mgr, _, _ = _manager(FakeAdapter())
+    assert mgr.get_qr_entry("nope") is None

@@ -12,7 +12,12 @@ from app.observability.logging import setup_logging
 from app.observability.metrics import Metrics, render_prometheus
 from app.service_factory import build_service
 from app.tools.crawl_url import crawl_url_impl
-from app.tools.login import begin_login_impl, cancel_login_impl, poll_login_impl
+from app.tools.login import (
+    begin_login_impl,
+    cancel_login_impl,
+    poll_login_impl,
+    render_qr_terminal_impl,
+)
 from app.tools.read_result import read_result_impl
 from app.tools.service import Service
 
@@ -100,6 +105,20 @@ async def poll_login(login_id: str) -> dict[str, Any]:
 @mcp.tool(description="取消一个进行中的扫码登录，释放其浏览器资源。")
 async def cancel_login(login_id: str) -> dict[str, Any]:
     return await cancel_login_impl(get_service(), login_id=login_id)
+
+
+@mcp.tool(
+    description=(
+        "把 begin_login 返回的登录二维码渲染成一段可直接粘贴进回复的纯文本"
+        "终端二维码（Unicode 半块字符），用于 CLI/TUI 场景展示给用户扫码。"
+        "调用方不需要自己下载图片、调用系统工具或写脚本解码——直接把返回的 "
+        "ascii_qr 字段原样贴进自己的回复文本即可。若 domain_mismatch 为 "
+        "true，说明解出的二维码内容和登录站点对不上，不要展示，改为重新调用 "
+        "begin_login。"
+    )
+)
+async def render_qr_terminal(login_id: str) -> dict[str, Any]:
+    return await render_qr_terminal_impl(get_service(), login_id=login_id)
 
 
 @mcp.custom_route("/qr/{login_id}", methods=["GET"])

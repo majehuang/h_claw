@@ -1,10 +1,17 @@
 import base64
+import contextlib
 from datetime import datetime, timezone
 
 import pytest
 
+import app.tools.login as login_module
 from app.crawler.login_manager import LoginError, LoginSession, LoginState
-from app.tools.login import begin_login_impl, cancel_login_impl, poll_login_impl
+from app.tools.login import (
+    begin_login_impl,
+    cancel_login_impl,
+    poll_login_impl,
+    render_qr_terminal_impl,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -12,11 +19,14 @@ _T0 = datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc)
 
 
 class FakeLoginManager:
-    def __init__(self, *, begin=None, begin_error=None, poll=None, cancel=True):
+    def __init__(
+        self, *, begin=None, begin_error=None, poll=None, cancel=True, qr_entry=None
+    ):
         self._begin = begin
         self._begin_error = begin_error
         self._poll = poll
         self._cancel = cancel
+        self._qr_entry = qr_entry
         self.calls = []
 
     async def begin(self, url):
@@ -32,6 +42,29 @@ class FakeLoginManager:
     async def cancel(self, login_id):
         self.calls.append(("cancel", login_id))
         return self._cancel
+
+    def get_qr_entry(self, login_id):
+        self.calls.append(("get_qr_entry", login_id))
+        return self._qr_entry
+
+
+@contextlib.contextmanager
+def _patched_qr_render(*, decode=None, decode_error=None, render=lambda payload: f"ASCII[{payload}]"):
+    original_decode = login_module.decode_qr_payload
+    original_render = login_module.render_ascii_qr
+
+    def fake_decode(png_bytes):
+        if decode_error is not None:
+            raise decode_error
+        return decode
+
+    login_module.decode_qr_payload = fake_decode
+    login_module.render_ascii_qr = render
+    try:
+        yield
+    finally:
+        login_module.decode_qr_payload = original_decode
+        login_module.render_ascii_qr = original_render
 
 
 class FakeService:
@@ -101,3 +134,64 @@ async def test_cancel_login_unknown():
     resp = await cancel_login_impl(service, login_id="missing")
     assert resp["status"] == "FAILED"
     assert resp["error_code"] == "LOGIN_NOT_FOUND"
+
+
+async def test_render_qr_terminal_returns_ascii_qr():
+    login = LoginSession(
+        login_id="lg_1", domain="item.jd.com", status=LoginState.QR_READY,
+        qr_png=b"PNGBYTES",
+    )
+    service = FakeService(FakeLoginManager(qr_entry=login))
+
+    with _patched_qr_render(decode="https://qr.m.jd.com/p?k=abc"):
+        resp = await render_qr_terminal_impl(service, login_id="lg_1")
+
+    assert resp["status"] == "SUCCESS"
+    assert resp["ascii_qr"] == "ASCII[https://qr.m.jd.com/p?k=abc]"
+    assert "domain_mismatch" not in resp
+
+
+async def test_render_qr_terminal_flags_domain_mismatch():
+    login = LoginSession(
+        login_id="lg_1", domain="item.jd.com", status=LoginState.QR_READY,
+        qr_png=b"PNGBYTES",
+    )
+    service = FakeService(FakeLoginManager(qr_entry=login))
+
+    with _patched_qr_render(decode="https://www.xiaohongshu.com/discovery?x=1"):
+        resp = await render_qr_terminal_impl(service, login_id="lg_1")
+
+    assert resp["status"] == "SUCCESS"
+    assert resp["domain_mismatch"] is True
+    assert "warning" in resp
+    assert "ascii_qr" in resp  # 仍然返回，交给调用方自行判断是否展示
+
+
+async def test_render_qr_terminal_decode_failure():
+    login = LoginSession(
+        login_id="lg_1", domain="item.jd.com", status=LoginState.QR_READY,
+        qr_png=b"PNGBYTES",
+    )
+    service = FakeService(FakeLoginManager(qr_entry=login))
+
+    from app.crawler.qr_render import QRDecodeError
+
+    with _patched_qr_render(decode_error=QRDecodeError("识别不出内容")):
+        resp = await render_qr_terminal_impl(service, login_id="lg_1")
+
+    assert resp["status"] == "FAILED"
+    assert resp["error_code"] == "QR_DECODE_FAILED"
+
+
+async def test_render_qr_terminal_unknown_login_id():
+    service = FakeService(FakeLoginManager(qr_entry=None))
+
+    resp = await render_qr_terminal_impl(service, login_id="missing")
+
+    assert resp["status"] == "FAILED"
+    assert resp["error_code"] == "LOGIN_NOT_FOUND"
+
+
+async def test_render_qr_terminal_when_disabled():
+    resp = await render_qr_terminal_impl(FakeService(None), login_id="lg_1")
+    assert resp["error_code"] == "LOGIN_INIT_FAILED"

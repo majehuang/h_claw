@@ -10,8 +10,11 @@ dependencies = [
     "fastmcp>=2.0",
     "lxml>=6.1.1",
     "markdownify>=1.2.3",
+    "pillow>=10.0",
     "pydantic-settings>=2.4",
     "pyyaml>=6.0.3",
+    "pyzbar>=0.1.9",
+    "qrcode>=7.4.2",
     "scrapling[fetchers]>=0.4.11",
     "starlette>=0.38",
 ]

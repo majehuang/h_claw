@@ -55,13 +55,17 @@ Page through a large result's Markdown. Call repeatedly with the returned
 
 ### `begin_login(url)`
 Start a QR-scan login for a site that needs it (京东/淘宝/天猫…). Returns
-`{ login_id, status:"QR_READY", domain, qr_png_base64, expires_at }`. The
-same image is also downloadable as plain PNG bytes at
-`GET {mcp_base_url}/qr/{login_id}` — prefer that over the base64 field
-whenever you'd otherwise have to type the base64 value into a command.
+`{ login_id, status:"QR_READY", domain, qr_png_base64, expires_at }`.
 **Show it to the user as an image so they can scan it** with the site's app.
 How to present it depends on the surface you're running on — see
 **Presenting the QR code** below. The login window is ~5 minutes.
+
+### `render_qr_terminal(login_id)`
+Renders the login QR as plain text you can paste straight into a chat reply
+— for TUI/CLI surfaces where you can't show an image. Returns
+`{ status:"SUCCESS", login_id, ascii_qr }` (or `{status:"FAILED",
+error_code:"QR_DECODE_FAILED"|"LOGIN_NOT_FOUND", ...}`). See **Presenting the
+QR code** below for when to use this vs. the raw image.
 
 ### `poll_login(login_id)`
 Poll the scan status. Returns `{ login_id, status, domain, session_id? }`.
@@ -118,87 +122,46 @@ Abort an in-progress login and free its browser. Call this if the user gives up.
 
 ## Presenting the QR code
 
-`qr_png_base64` is a PNG screenshot of the site's own QR widget — treat how
-you show it as a presentation detail, not something to fetch/regenerate from
-scratch (that would violate hard rule #1).
-
-**Never retype `qr_png_base64` by hand into a new tool call.** It's a
-10,000+ character opaque blob — reproducing it verbatim in a `terminal`/
-`execute_code` argument is exactly the kind of long-string copy an LLM is
-unreliable at; a single dropped or duplicated character breaks base64
-padding and the decode fails (`Incorrect padding` / `invalid input`). This
-already happened in practice. The server has a dedicated endpoint for this —
-use it instead of the base64 field whenever you need the PNG as a file:
-
-```
-GET {mcp_base_url}/qr/{login_id}
-```
-
-`{mcp_base_url}` is the crawler-mcp server's HTTP origin — the MCP endpoint
-you're configured with minus the trailing `/mcp` (e.g. if your MCP URL is
-`http://100.77.190.58:8000/mcp`, the base is `http://100.77.190.58:8000`).
-`{login_id}` is the short id `begin_login` returned — safe to copy, it's ~15
-characters. This returns the same PNG bytes as `qr_png_base64`, decoded, no
-typing required. It 404s once the login session ends (success/expiry/cancel),
-so there's no lingering exposure.
-
-**First, check how you're actually talking to the user right now** — don't
-default to whatever channel you've used with them before (e.g. don't
-reflexively call `send_message(target="weixin", ...)` out of habit/memory).
-Look at how this conversation is running:
+There are exactly two ways to show the QR — pick based on how you're
+actually talking to the user right now. Don't default to whatever channel
+you've used with them before (e.g. don't reflexively call
+`send_message(target="weixin", ...)` out of habit/memory) — check the
+current turn.
 
 - **You're in a direct interactive turn** — i.e. this session's `platform` is
   `cli` (an `hermes chat` session, including over SSH), or any other mode
-  where your reply is what the user is looking at right now. This **is** the
-  TUI case, even if you've reached this same user over WeChat in other
-  sessions. **Do not call `send_message` at all** — you already have a direct
-  channel back to them: your own response. Display the QR directly in the
-  terminal with **this exact script** (run it as a single `terminal`/
-  `execute_code` call — do not improvise your own decode/render pipeline, and
-  do not paste the base64 value in — this script downloads it):
+  where your reply is what the user is looking at right now. This is the TUI
+  case, even if you've reached this same user over WeChat in other sessions.
+  **Do not call `send_message` at all** — you already have a direct channel
+  back to them: your own response.
 
-  ```bash
-  QR_FILE=$(mktemp --suffix=.png)
-  curl -sf -o "$QR_FILE" "{mcp_base_url}/qr/{login_id}"
+  Call `render_qr_terminal(login_id)` and put its `ascii_qr` field directly
+  into your chat reply (inside a code block). That's the whole procedure —
+  **do not** write a `terminal`/`execute_code` script to download, decode, or
+  re-render the QR yourself; the server already did all of that for you.
+  There is nothing left to improvise here.
 
-  if command -v chafa >/dev/null 2>&1; then
-      chafa "$QR_FILE"
-  elif command -v viu >/dev/null 2>&1; then
-      viu "$QR_FILE"
-  elif command -v timg >/dev/null 2>&1; then
-      timg "$QR_FILE"
-  elif command -v zbarimg >/dev/null 2>&1 && command -v qrencode >/dev/null 2>&1; then
-      PAYLOAD=$(zbarimg --raw -q "$QR_FILE")
-      if [ -n "$PAYLOAD" ]; then
-          qrencode -t ANSIUTF8 -o - "$PAYLOAD"
-      else
-          echo "NO_QR_DECODED"
-      fi
-  else
-      echo "NO_TERMINAL_QR_TOOLS_AVAILABLE"
-  fi
-  ```
-
-  Substitute the real `{mcp_base_url}` and `{login_id}` — both are short and
-  safe to type, unlike the base64 blob.
-
-  - **Copy the script's rendered output into your own chat reply** (inside a
-    code block). Do not just say "QR code shown above" / "二维码已显示" and
-    stop — some clients only render your own reply text, not the raw
-    terminal-tool output, so a user can be looking at nothing while you think
-    they're looking at a QR code. Your reply is the only thing guaranteed to
-    reach them; put the actual QR content in it.
-  - If the script prints `NO_QR_DECODED` or `NO_TERMINAL_QR_TOOLS_AVAILABLE`,
-    say so plainly and ask the user to continue from a surface that can
-    render images — don't invent a workaround, don't skip the login, and
-    don't fall back to `send_message` as a shortcut.
+  - **You must actually include `ascii_qr` in your own reply text**, not just
+    say "QR code shown above" / "二维码已显示" and stop. Some clients only
+    render your reply text, not raw tool-call output — a user can be looking
+    at nothing while you think they're looking at a QR code. Your reply is
+    the only thing guaranteed to reach them.
+  - If `render_qr_terminal` returns `domain_mismatch: true`, its `ascii_qr`
+    decoded to a URL that doesn't match the site you're logging into (it
+    likely captured a placeholder/ad image instead of the real QR — this has
+    happened before). **Do not show it to the user.** Call `begin_login`
+    again for a fresh one instead.
+  - If it returns `status: "FAILED"` with `error_code: "QR_DECODE_FAILED"`,
+    say so plainly and offer to retry with a fresh `begin_login` — don't
+    invent a workaround, don't skip the login, and don't fall back to
+    `send_message` as a shortcut.
 - **You're only reachable through a messaging channel** — e.g. this turn was
   triggered by a gateway/webhook and there is no direct reply surface, so
   `send_message` (or similar) is the *only* way to reach the user at all.
-  Only in this case, render it as a `data:image/png;base64,...` inline image
-  (or the channel's native image-send mechanism) through that channel — the
-  `qr_png_base64` field is meant for exactly this case, where the platform
-  natively handles image data for you rather than you having to type it.
+  Only in this case, render `qr_png_base64` (from `begin_login`) as a
+  `data:image/png;base64,...` inline image (or the channel's native
+  image-send mechanism) through that channel — the platform handles the
+  image data for you natively, so there's no typing/decoding involved.
 - Either way, still poll `poll_login` per step 3 above — presentation method
   never changes the polling/login logic.
 
@@ -219,3 +182,7 @@ tell the user instead of trying a workaround.
 - ❌ Wrapping `poll_login` in `execute_code`/`terminal` with a fake sleep-and-
   check loop instead of just calling the tool. ✅ Call `poll_login` directly,
   once per check, a few seconds apart.
+- ❌ Writing a `curl`/decode/`qrencode`-style script to show the QR in a
+  terminal. ✅ Call `render_qr_terminal` and paste its `ascii_qr`.
+- ❌ Saying "QR code shown above" / "二维码已显示" without the QR actually
+  being in your reply text. ✅ Paste `ascii_qr` into the reply itself.
