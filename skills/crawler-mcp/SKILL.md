@@ -109,14 +109,18 @@ Abort an in-progress login and free its browser. Call this if the user gives up.
 you show it as a presentation detail, not something to fetch/regenerate from
 scratch (that would violate hard rule #1).
 
-- **Chat surface that renders images** (Claude Desktop/Code, WeChat, etc.):
-  render it as a `data:image/png;base64,...` inline image. This is the
-  default — use it whenever the channel supports image rendering.
-- **TUI / terminal session** (no chat image rendering, e.g. an `hermes chat`
-  CLI session over SSH): do **not** try to send it as a chat image — delivery
-  can silently fail (e.g. a WeChat-bridged channel returning a CDN 500 for the
-  image), leaving the user stuck with no QR and no explanation. Instead
-  display it directly in the terminal:
+**First, check how you're actually talking to the user right now** — don't
+default to whatever channel you've used with them before (e.g. don't
+reflexively call `send_message(target="weixin", ...)` out of habit/memory).
+Look at how this conversation is running:
+
+- **You're in a direct interactive turn** — i.e. this session's `platform` is
+  `cli` (an `hermes chat` session, including over SSH), or any other mode
+  where your reply is what the user is looking at right now. This **is** the
+  TUI case, even if you've reached this same user over WeChat in other
+  sessions. **Do not call `send_message` at all** — you already have a direct
+  channel back to them: your own response. Display the QR directly in the
+  terminal instead:
   1. Decode `qr_png_base64` to a temp PNG file.
   2. If a terminal image protocol viewer is available (`chafa`, `viu`, `timg`,
      kitty `icat`, iTerm2 `imgcat`), use it to render the PNG in place — this
@@ -127,8 +131,14 @@ scratch (that would violate hard rule #1).
      scannable than dumping the raster screenshot as ASCII art.
   4. If neither path is available on the host, say so plainly and ask the
      user to continue from a surface that can render images, rather than
-     silently failing or guessing at alternatives (don't skip the login and
-     improvise a workaround like searching the web instead).
+     silently failing or guessing at alternatives (don't skip the login,
+     improvise a workaround like searching the web instead, or fall back to
+     `send_message` as a shortcut).
+- **You're only reachable through a messaging channel** — e.g. this turn was
+  triggered by a gateway/webhook and there is no direct reply surface, so
+  `send_message` (or similar) is the *only* way to reach the user at all.
+  Only in this case, render it as a `data:image/png;base64,...` inline image
+  (or the channel's native image-send mechanism) through that channel.
 - Either way, still poll `poll_login` per step 3 above — presentation method
   never changes the polling/login logic.
 
