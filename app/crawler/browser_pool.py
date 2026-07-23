@@ -10,11 +10,17 @@ class BrowserSession(Protocol):
     def get_pool_stats(self) -> dict[str, int]: ...
 
 
+# 受限容器环境下 Chromium crashpad_handler 子进程会被杀死并拖垮整个浏览器启动，禁用崩溃上报规避。
+_CRASHPAD_SAFE_FLAGS = ["--disable-crash-reporter"]
+
+
 def _default_dynamic_factory(max_pages: int) -> Callable[[], BrowserSession]:
     def _factory() -> BrowserSession:
         from scrapling.fetchers import AsyncDynamicSession
 
-        return AsyncDynamicSession(max_pages=max_pages, headless=True)
+        return AsyncDynamicSession(
+            max_pages=max_pages, headless=True, extra_flags=_CRASHPAD_SAFE_FLAGS
+        )
 
     return _factory
 
@@ -23,7 +29,9 @@ def _default_stealth_factory(max_pages: int) -> Callable[[], BrowserSession]:
     def _factory() -> BrowserSession:
         from scrapling.fetchers import AsyncStealthySession
 
-        return AsyncStealthySession(max_pages=max_pages, headless=True)
+        return AsyncStealthySession(
+            max_pages=max_pages, headless=True, extra_flags=_CRASHPAD_SAFE_FLAGS
+        )
 
     return _factory
 

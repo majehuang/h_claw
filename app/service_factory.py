@@ -64,7 +64,10 @@ def _build_login_infra(settings: Settings, database: Database, playwright: Any):
         from scrapling.fetchers import AsyncStealthySession
 
         session = AsyncStealthySession(
-            max_pages=1, headless=True, user_data_dir=str(work_dir)
+            max_pages=1,
+            headless=True,
+            user_data_dir=str(work_dir),
+            extra_flags=["--disable-crash-reporter"],
         )
         await session.start()
         return session
@@ -82,6 +85,7 @@ def _build_login_infra(settings: Settings, database: Database, playwright: Any):
         context = await playwright.chromium.launch_persistent_context(
             user_data_dir=user_data_dir, headless=True,
             viewport={"width": 1280, "height": 900},
+            args=["--disable-crash-reporter"],
         )
         page = context.pages[0] if context.pages else await context.new_page()
         return context, page

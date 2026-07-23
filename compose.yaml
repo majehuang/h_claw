@@ -26,6 +26,7 @@ services:
       MAX_HTML_BYTES: 10485760
 
       DATABASE_URL: ${CRAWLER_DATABASE_URL}
+      PROFILE_ENCRYPTION_KEY: ${PROFILE_ENCRYPTION_KEY}   # 从部署环境注入，勿写死
 
     volumes:
       - crawler-data:/data
@@ -34,7 +35,11 @@ services:
     # 浏览器临时文件写入 tmpfs（/tmp 与 /dev/shm），已实测不影响 Chromium。
     read_only: true
     tmpfs:
-      - /tmp:rw,size=512m
+      # HOME=/home/crawler 只读会导致 Chromium crashpad_handler 因无法写入默认
+      # crash 数据库目录而崩溃（"chrome_crashpad_handler: --database is required"），
+      # 必须以 tmpfs 挂载并显式指定运行用户 uid/gid（容器内 crawler=1000:1000）。
+      - /tmp:rw,size=1g,uid=1000,gid=1000          # 登录明文工作区 + 浏览器临时文件，按并发上调
+      - /home/crawler:rw,size=64m,uid=1000,gid=1000
     cap_drop:
       - ALL
     security_opt:
@@ -48,7 +53,7 @@ services:
           memory: 4g
 
     ports:
-      - "127.0.0.1:8000:8000"
+      - "${MCP_BIND_ADDR:-127.0.0.1}:8000:8000"
 
     networks:
       - hermes-net
