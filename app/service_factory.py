@@ -85,7 +85,16 @@ def _build_login_infra(settings: Settings, database: Database, playwright: Any):
         context = await playwright.chromium.launch_persistent_context(
             user_data_dir=user_data_dir, headless=True,
             viewport={"width": 1280, "height": 900},
-            args=["--disable-crash-reporter"],
+            # 登录页要靠站点自己的轮询 JS 在浏览器里持续跑（DOM 观察式，§16）；
+            # Chromium 默认会对"不可见"标签页限流/暂停定时器，无头模式下这一页
+            # 从没真正"可见"过，容易导致站点自己的扫码轮询 JS 停摆——扫了手机也
+            # 永远等不到状态变化。这三个标志禁用该类限流（HC-QR-4）。
+            args=[
+                "--disable-crash-reporter",
+                "--disable-background-timer-throttling",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
+            ],
         )
         page = context.pages[0] if context.pages else await context.new_page()
         return context, page
