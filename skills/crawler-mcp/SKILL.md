@@ -57,8 +57,8 @@ Page through a large result's Markdown. Call repeatedly with the returned
 Start a QR-scan login for a site that needs it (京东/淘宝/天猫…). Returns
 `{ login_id, status:"QR_READY", domain, qr_png_base64, expires_at }`.
 **Show `qr_png_base64` to the user as an image so they can scan it** with the
-site's app (render it as a `data:image/png;base64,...` image in chat). The login
-window is ~5 minutes.
+site's app. How to present it depends on the surface you're running on — see
+**Presenting the QR code** below. The login window is ~5 minutes.
 
 ### `poll_login(login_id)`
 Poll the scan status. Returns `{ login_id, status, domain, session_id? }`.
@@ -88,16 +88,49 @@ Abort an in-progress login and free its browser. Call this if the user gives up.
 ## Login flow (for `LOGIN_REQUIRED`, or when the user asks to log in)
 
 1. `begin_login(url)` → get `login_id` + `qr_png_base64`.
-2. **Render `qr_png_base64` as an image to the user** and ask them to scan it
-   with the site app (京东/淘宝 App). Do not write a script to display or decode
-   it — just present the base64 PNG as an inline image.
+2. **Present the QR code to the user** — see **Presenting the QR code** below
+   for how, depending on the surface. Ask them to scan it with the site app
+   (京东/淘宝 App).
 3. `poll_login(login_id)` every ~3s until `status` is `SUCCESS` (or a terminal
-   state). On `SUCCESS`, keep the returned `session_id`.
+   state). **Call the `poll_login` tool directly, once per check — do not
+   wrap it in `execute_code`/`terminal`, and do not write a sleep-loop or any
+   other script to "simulate" polling.** Just make the tool call again after
+   a few seconds; the gap between turns is enough pacing on its own, there is
+   nothing here that needs code. On `SUCCESS`, keep the returned `session_id`.
 4. `crawl_url(url, session_id=<session_id>)` to fetch the page as the logged-in
    user. **Reuse the same `session_id`** for later pages on that site — no need
    to log in again until it expires.
 5. If `status` becomes `EXPIRED`/`FAILED`, tell the user and offer to restart
    with a fresh `begin_login`. If the user gives up, `cancel_login(login_id)`.
+
+## Presenting the QR code
+
+`qr_png_base64` is a PNG screenshot of the site's own QR widget — treat how
+you show it as a presentation detail, not something to fetch/regenerate from
+scratch (that would violate hard rule #1).
+
+- **Chat surface that renders images** (Claude Desktop/Code, WeChat, etc.):
+  render it as a `data:image/png;base64,...` inline image. This is the
+  default — use it whenever the channel supports image rendering.
+- **TUI / terminal session** (no chat image rendering, e.g. an `hermes chat`
+  CLI session over SSH): do **not** try to send it as a chat image — delivery
+  can silently fail (e.g. a WeChat-bridged channel returning a CDN 500 for the
+  image), leaving the user stuck with no QR and no explanation. Instead
+  display it directly in the terminal:
+  1. Decode `qr_png_base64` to a temp PNG file.
+  2. If a terminal image protocol viewer is available (`chafa`, `viu`, `timg`,
+     kitty `icat`, iTerm2 `imgcat`), use it to render the PNG in place — this
+     is a display step, not a scraping/login workaround, so it's fine to run.
+  3. Otherwise, decode the QR's payload with a QR reader (`zbarimg`, `pyzbar`)
+     and re-emit it as a scannable terminal QR with `qrencode -t ANSIUTF8`.
+     Redrawing real QR modules from the decoded payload is much more reliably
+     scannable than dumping the raster screenshot as ASCII art.
+  4. If neither path is available on the host, say so plainly and ask the
+     user to continue from a surface that can render images, rather than
+     silently failing or guessing at alternatives (don't skip the login and
+     improvise a workaround like searching the web instead).
+- Either way, still poll `poll_login` per step 3 above — presentation method
+  never changes the polling/login logic.
 
 If `begin_login` returns `error_code: "LOGIN_INIT_FAILED"` with "登录功能未启用",
 the server was started without `PROFILE_ENCRYPTION_KEY` — login is disabled;
@@ -113,3 +146,6 @@ tell the user instead of trying a workaround.
 - ❌ Trying to solve or auto-drag a slider/captcha. ✅ Report `CAPTCHA_REQUIRED`.
 - ❌ Re-calling a failing URL in a tight loop. ✅ Honor `status` /
   `retry_after_seconds`.
+- ❌ Wrapping `poll_login` in `execute_code`/`terminal` with a fake sleep-and-
+  check loop instead of just calling the tool. ✅ Call `poll_login` directly,
+  once per check, a few seconds apart.
