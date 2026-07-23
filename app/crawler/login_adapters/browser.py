@@ -8,6 +8,12 @@ DOM（若配置）已出现。只有全部满足才回 SUCCESS，从而只在验
 """
 from urllib.parse import urlsplit
 
+# 二维码稳定性重截（HC-QR-2）：站点登录页常先渲染占位/广告图，异步替换成真正的
+# 登录二维码——曾实测截到过京东登录页里的第三方推广二维码。等元素可见后连续两次
+# 截图字节相同才认为已稳定，最多重截这么多次（每次间隔见下），避免截到过渡态。
+_QR_STABILITY_MAX_ATTEMPTS = 5
+_QR_STABILITY_INTERVAL_MS = 800
+
 
 def _host_allowed(host: str, allow: tuple[str, ...]) -> bool:
     host = (host or "").lower()
@@ -38,7 +44,16 @@ class _QrBrowserAdapter:
         locator = page.locator(self._qr_selector).first
         await locator.wait_for(state="visible", timeout=15_000)
         await page.wait_for_timeout(1500)
-        return await locator.screenshot()
+        shot = await locator.screenshot()
+        # 同一 DOM 位置可能先展示占位/广告图，再异步换成真正的登录二维码；
+        # 连续两次截图内容一致才收，否则继续等它稳定下来（HC-QR-2）。
+        for _ in range(_QR_STABILITY_MAX_ATTEMPTS):
+            await page.wait_for_timeout(_QR_STABILITY_INTERVAL_MS)
+            next_shot = await locator.screenshot()
+            if next_shot == shot:
+                return shot
+            shot = next_shot
+        return shot
 
     async def _visible(self, page, selector: str) -> bool:
         try:
