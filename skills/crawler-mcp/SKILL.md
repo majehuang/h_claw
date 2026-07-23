@@ -90,6 +90,16 @@ Abort an in-progress login and free its browser. Call this if the user gives up.
 
 ## Login flow (for `LOGIN_REQUIRED`, or when the user asks to log in)
 
+0. **Check first: do you already have an active `login_id` for this domain**
+   (one you called `begin_login` for earlier in this conversation and haven't
+   seen reach a terminal state)? If so, **reuse it** — `poll_login` it, don't
+   call `begin_login` again. Every `begin_login` call opens a new real browser
+   session server-side; calling it repeatedly (e.g. re-deciding "let me
+   generate the QR" a few turns in a row) leaks browser sessions and produces
+   multiple different QR codes for the same login attempt, which is just
+   confusing — only the *last* one you show is even still relevant, and the
+   others sit there wasting resources until they expire. If you do end up
+   with stray unused ones, `cancel_login` them.
 1. `begin_login(url)` → get `login_id` + `qr_png_base64`.
 2. **Present the QR code to the user** — see **Presenting the QR code** below
    for how, depending on the surface. Ask them to scan it with the site app
@@ -172,6 +182,12 @@ Look at how this conversation is running:
   Substitute the real `{mcp_base_url}` and `{login_id}` — both are short and
   safe to type, unlike the base64 blob.
 
+  - **Copy the script's rendered output into your own chat reply** (inside a
+    code block). Do not just say "QR code shown above" / "二维码已显示" and
+    stop — some clients only render your own reply text, not the raw
+    terminal-tool output, so a user can be looking at nothing while you think
+    they're looking at a QR code. Your reply is the only thing guaranteed to
+    reach them; put the actual QR content in it.
   - If the script prints `NO_QR_DECODED` or `NO_TERMINAL_QR_TOOLS_AVAILABLE`,
     say so plainly and ask the user to continue from a surface that can
     render images — don't invent a workaround, don't skip the login, and
