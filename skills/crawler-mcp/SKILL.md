@@ -120,20 +120,38 @@ Look at how this conversation is running:
   TUI case, even if you've reached this same user over WeChat in other
   sessions. **Do not call `send_message` at all** — you already have a direct
   channel back to them: your own response. Display the QR directly in the
-  terminal instead:
-  1. Decode `qr_png_base64` to a temp PNG file.
-  2. If a terminal image protocol viewer is available (`chafa`, `viu`, `timg`,
-     kitty `icat`, iTerm2 `imgcat`), use it to render the PNG in place — this
-     is a display step, not a scraping/login workaround, so it's fine to run.
-  3. Otherwise, decode the QR's payload with a QR reader (`zbarimg`, `pyzbar`)
-     and re-emit it as a scannable terminal QR with `qrencode -t ANSIUTF8`.
-     Redrawing real QR modules from the decoded payload is much more reliably
-     scannable than dumping the raster screenshot as ASCII art.
-  4. If neither path is available on the host, say so plainly and ask the
-     user to continue from a surface that can render images, rather than
-     silently failing or guessing at alternatives (don't skip the login,
-     improvise a workaround like searching the web instead, or fall back to
-     `send_message` as a shortcut).
+  terminal with **this exact script** (run it as a single `terminal`/
+  `execute_code` call — do not improvise your own decode/render pipeline):
+
+  ```bash
+  QR_B64='<the qr_png_base64 value from begin_login>'
+  QR_FILE=$(mktemp --suffix=.png)
+  echo "$QR_B64" | base64 -d > "$QR_FILE"
+
+  if command -v chafa >/dev/null 2>&1; then
+      chafa "$QR_FILE"
+  elif command -v viu >/dev/null 2>&1; then
+      viu "$QR_FILE"
+  elif command -v timg >/dev/null 2>&1; then
+      timg "$QR_FILE"
+  elif command -v zbarimg >/dev/null 2>&1 && command -v qrencode >/dev/null 2>&1; then
+      PAYLOAD=$(zbarimg --raw -q "$QR_FILE")
+      if [ -n "$PAYLOAD" ]; then
+          qrencode -t ANSIUTF8 -o - "$PAYLOAD"
+      else
+          echo "NO_QR_DECODED"
+      fi
+  else
+      echo "NO_TERMINAL_QR_TOOLS_AVAILABLE"
+  fi
+  ```
+
+  - Pipe the base64 through `echo | base64 -d` (via stdin), don't pass it as a
+    long CLI argument — it can hit `ARG_MAX`/quoting limits.
+  - If the script prints `NO_QR_DECODED` or `NO_TERMINAL_QR_TOOLS_AVAILABLE`,
+    say so plainly and ask the user to continue from a surface that can
+    render images — don't invent a workaround, don't skip the login, and
+    don't fall back to `send_message` as a shortcut.
 - **You're only reachable through a messaging channel** — e.g. this turn was
   triggered by a gateway/webhook and there is no direct reply surface, so
   `send_message` (or similar) is the *only* way to reach the user at all.
