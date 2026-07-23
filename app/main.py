@@ -3,7 +3,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
 from starlette.responses import PlainTextResponse
 
@@ -100,6 +100,23 @@ async def poll_login(login_id: str) -> dict[str, Any]:
 @mcp.tool(description="取消一个进行中的扫码登录，释放其浏览器资源。")
 async def cancel_login(login_id: str) -> dict[str, Any]:
     return await cancel_login_impl(get_service(), login_id=login_id)
+
+
+@mcp.custom_route("/qr/{login_id}", methods=["GET"])
+async def qr_png(request: Request) -> Response:
+    """按 login_id 直接取二维码 PNG 字节（HC-QR-1）。
+
+    给终端场景用：客户端只需在命令里带一个短的 login_id（begin_login 已经
+    返回过），而不必把 qr_png_base64 这种上万字符的 base64 blob整段抄进新的
+    工具调用参数里——那种长度的原样复现对 LLM 而言本来就不可靠，容易丢字符
+    导致 base64 解码失败。登录会话结束后条目从注册表移除，下载窗口自然关闭。
+    """
+    login_id = request.path_params["login_id"]
+    login_manager = get_service().login_manager
+    png = login_manager.get_qr_png(login_id) if login_manager is not None else None
+    if png is None:
+        return Response(status_code=404)
+    return Response(content=png, media_type="image/png")
 
 
 @mcp.custom_route("/healthz", methods=["GET"])

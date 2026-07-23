@@ -139,3 +139,23 @@ async def test_cancel_unknown_returns_false():
 async def test_poll_unknown_returns_none():
     mgr, _, _ = _manager(FakeAdapter())
     assert await mgr.poll("nope") is None
+
+
+async def test_get_qr_png_returns_bytes_for_active_session():
+    mgr, _, _ = _manager(FakeAdapter())
+    await mgr.begin("https://www.jd.com/login")
+
+    assert mgr.get_qr_png("lg_test") == b"PNGDATA"
+
+
+async def test_get_qr_png_returns_none_for_unknown_id():
+    mgr, _, _ = _manager(FakeAdapter())
+    assert mgr.get_qr_png("nope") is None
+
+
+async def test_get_qr_png_returns_none_after_cancel():
+    mgr, _, _ = _manager(FakeAdapter())
+    await mgr.begin("https://www.jd.com/login")
+    await mgr.cancel("lg_test")
+
+    assert mgr.get_qr_png("lg_test") is None

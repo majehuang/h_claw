@@ -55,9 +55,12 @@ Page through a large result's Markdown. Call repeatedly with the returned
 
 ### `begin_login(url)`
 Start a QR-scan login for a site that needs it (京东/淘宝/天猫…). Returns
-`{ login_id, status:"QR_READY", domain, qr_png_base64, expires_at }`.
-**Show `qr_png_base64` to the user as an image so they can scan it** with the
-site's app. How to present it depends on the surface you're running on — see
+`{ login_id, status:"QR_READY", domain, qr_png_base64, expires_at }`. The
+same image is also downloadable as plain PNG bytes at
+`GET {mcp_base_url}/qr/{login_id}` — prefer that over the base64 field
+whenever you'd otherwise have to type the base64 value into a command.
+**Show it to the user as an image so they can scan it** with the site's app.
+How to present it depends on the surface you're running on — see
 **Presenting the QR code** below. The login window is ~5 minutes.
 
 ### `poll_login(login_id)`
@@ -109,6 +112,26 @@ Abort an in-progress login and free its browser. Call this if the user gives up.
 you show it as a presentation detail, not something to fetch/regenerate from
 scratch (that would violate hard rule #1).
 
+**Never retype `qr_png_base64` by hand into a new tool call.** It's a
+10,000+ character opaque blob — reproducing it verbatim in a `terminal`/
+`execute_code` argument is exactly the kind of long-string copy an LLM is
+unreliable at; a single dropped or duplicated character breaks base64
+padding and the decode fails (`Incorrect padding` / `invalid input`). This
+already happened in practice. The server has a dedicated endpoint for this —
+use it instead of the base64 field whenever you need the PNG as a file:
+
+```
+GET {mcp_base_url}/qr/{login_id}
+```
+
+`{mcp_base_url}` is the crawler-mcp server's HTTP origin — the MCP endpoint
+you're configured with minus the trailing `/mcp` (e.g. if your MCP URL is
+`http://100.77.190.58:8000/mcp`, the base is `http://100.77.190.58:8000`).
+`{login_id}` is the short id `begin_login` returned — safe to copy, it's ~15
+characters. This returns the same PNG bytes as `qr_png_base64`, decoded, no
+typing required. It 404s once the login session ends (success/expiry/cancel),
+so there's no lingering exposure.
+
 **First, check how you're actually talking to the user right now** — don't
 default to whatever channel you've used with them before (e.g. don't
 reflexively call `send_message(target="weixin", ...)` out of habit/memory).
@@ -121,12 +144,12 @@ Look at how this conversation is running:
   sessions. **Do not call `send_message` at all** — you already have a direct
   channel back to them: your own response. Display the QR directly in the
   terminal with **this exact script** (run it as a single `terminal`/
-  `execute_code` call — do not improvise your own decode/render pipeline):
+  `execute_code` call — do not improvise your own decode/render pipeline, and
+  do not paste the base64 value in — this script downloads it):
 
   ```bash
-  QR_B64='<the qr_png_base64 value from begin_login>'
   QR_FILE=$(mktemp --suffix=.png)
-  echo "$QR_B64" | base64 -d > "$QR_FILE"
+  curl -sf -o "$QR_FILE" "{mcp_base_url}/qr/{login_id}"
 
   if command -v chafa >/dev/null 2>&1; then
       chafa "$QR_FILE"
@@ -146,8 +169,9 @@ Look at how this conversation is running:
   fi
   ```
 
-  - Pipe the base64 through `echo | base64 -d` (via stdin), don't pass it as a
-    long CLI argument — it can hit `ARG_MAX`/quoting limits.
+  Substitute the real `{mcp_base_url}` and `{login_id}` — both are short and
+  safe to type, unlike the base64 blob.
+
   - If the script prints `NO_QR_DECODED` or `NO_TERMINAL_QR_TOOLS_AVAILABLE`,
     say so plainly and ask the user to continue from a surface that can
     render images — don't invent a workaround, don't skip the login, and
@@ -156,7 +180,9 @@ Look at how this conversation is running:
   triggered by a gateway/webhook and there is no direct reply surface, so
   `send_message` (or similar) is the *only* way to reach the user at all.
   Only in this case, render it as a `data:image/png;base64,...` inline image
-  (or the channel's native image-send mechanism) through that channel.
+  (or the channel's native image-send mechanism) through that channel — the
+  `qr_png_base64` field is meant for exactly this case, where the platform
+  natively handles image data for you rather than you having to type it.
 - Either way, still poll `poll_login` per step 3 above — presentation method
   never changes the polling/login logic.
 

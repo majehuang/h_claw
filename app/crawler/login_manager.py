@@ -126,6 +126,12 @@ class LoginManager:
         entry.login = replace(entry.login, status=status)
         return entry.login
 
+    def get_qr_png(self, login_id: str) -> bytes | None:
+        """供 /qr/{login_id}.png 只读端点使用（HC-QR-1）：登录结束后条目已从
+        注册表移除，天然限定了可下载窗口，无需额外过期判断。"""
+        entry = self._entries.get(login_id)
+        return entry.login.qr_png if entry is not None else None
+
     async def cancel(self, login_id: str) -> bool:
         entry = self._entries.get(login_id)
         if entry is None:
