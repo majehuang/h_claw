@@ -6,7 +6,10 @@
 DOM（若配置）已出现。只有全部满足才回 SUCCESS，从而只在验证通过后才封存 profile；
 跳到滑块/安全页/第三方域名不会误创建 ACTIVE profile。
 """
+import logging
 from urllib.parse import urlsplit
+
+logger = logging.getLogger(__name__)
 
 # 二维码稳定性重截（HC-QR-2）：站点登录页常先渲染占位/广告图，异步替换成真正的
 # 登录二维码——曾实测截到过京东登录页里的第三方推广二维码。等元素可见后连续两次
@@ -63,6 +66,14 @@ class _QrBrowserAdapter:
 
     async def poll_status(self, page) -> str:
         url = page.url or ""
+        parsed = urlsplit(url)
+        # 诊断用（HC-QR-5）：只记 host/path，不记 query string——登录跳转的
+        # query 里常带 ticket/token 类参数，不能整条 URL 落日志。
+        logger.info(
+            "login poll_status host=%s path=%s",
+            parsed.hostname or "",
+            parsed.path or "",
+        )
         # 仍在登录页：检查过期，否则等待扫码。
         if any(marker in url for marker in self._login_url_markers):
             if self._expired_selector is not None and await self._visible(
