@@ -16,6 +16,7 @@ _KEYWORDS = [k.lower() for k in _SIGNATURES.get("keywords", [])]
 _SELECTORS = _SIGNATURES.get("selectors", [])
 _LOGIN_PATH_PATTERNS = _SIGNATURES.get("login_path_patterns", [])
 _CAPTCHA_DOMAINS = _SIGNATURES.get("captcha_domains", [])
+_LOGIN_DOMAINS = _SIGNATURES.get("login_domains", [])
 _SITE_ADAPTERS = _SIGNATURES.get("site_adapters", [])
 
 _PRICE_PATTERN = re.compile(r"[¥$€£]\s?\d|NT\$\s?\d|\d+\s?元")
@@ -77,6 +78,10 @@ def _host_matches_captcha_domain(host: str) -> bool:
     return any(host == domain or host.endswith(f".{domain}") for domain in _CAPTCHA_DOMAINS)
 
 
+def _host_matches_login_domain(host: str) -> bool:
+    return any(host == domain or host.endswith(f".{domain}") for domain in _LOGIN_DOMAINS)
+
+
 def _host_matches(host: str, domains) -> bool:
     host = (host or "").lower()
     return any(host == d or host.endswith(f".{d}") for d in domains)
@@ -116,6 +121,11 @@ def _check_redirect_target(
         )
     if any(parsed.path.startswith(p) for p in _LOGIN_PATH_PATTERNS):
         signal = f"path={parsed.path}"
+        return DetectionResult(
+            False, "login_redirect", signal, provider="login", matched_signal=signal
+        )
+    if _host_matches_login_domain(host):
+        signal = f"host={host}"
         return DetectionResult(
             False, "login_redirect", signal, provider="login", matched_signal=signal
         )

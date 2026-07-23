@@ -84,3 +84,38 @@ def test_url_mismatch_detected():
 def test_same_site_redirect_is_not_url_mismatch():
     result = detect(_response(final_url="https://m.shop.example.com/product/123"))
     assert result.ok is True
+
+
+def test_jd_login_redirect_is_not_url_mismatch():
+    # item.jd.com -> passport.jd.com 是同公司兄弟子域，不是字面子域关系，
+    # 之前会被 url_mismatch 误判为跨站跳转（HC-005 回归用例）。
+    result = detect(
+        _response(
+            request_url="https://item.jd.com/100012043978.html",
+            final_url="https://passport.jd.com/new/login.aspx?ReturnUrl=...",
+        )
+    )
+    assert result.ok is False
+    assert result.reason == "login_redirect"
+
+
+def test_jd_risk_verify_redirect_is_login_redirect():
+    result = detect(
+        _response(
+            request_url="https://item.jd.com/100012043978.html",
+            final_url="https://safe.jd.com/user/risk/verify.html",
+        )
+    )
+    assert result.ok is False
+    assert result.reason == "login_redirect"
+
+
+def test_taobao_login_redirect_is_not_url_mismatch():
+    result = detect(
+        _response(
+            request_url="https://item.taobao.com/item.htm?id=1",
+            final_url="https://login.taobao.com/member/login.jhtml",
+        )
+    )
+    assert result.ok is False
+    assert result.reason == "login_redirect"

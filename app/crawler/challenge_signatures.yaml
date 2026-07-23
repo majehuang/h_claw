@@ -26,6 +26,15 @@ captcha_domains:
   - "challenges.cloudflare.com"
   - "captcha-delivery.com"
 
+# 站点自身的登录/风控跳转域名：请求域与这些域不是字面子域关系（如 item.jd.com
+# -> passport.jd.com 是同公司兄弟子域），会被 url_mismatch 误判为跨站跳转。
+# 命中即归类为 login_redirect，交由已有的 QR 登录流程处理，而不是判定为不可用。
+login_domains:
+  - "passport.jd.com"
+  - "safe.jd.com"
+  - "login.taobao.com"
+  - "sec.taobao.com"
+
 # 站点适配器：站点专属的交互式挑战特征，只在最终 host 命中 domains 时生效，
 # 不污染通用 detector（HC-005）。新增站点只在此加一条，不改 detector.py。
 site_adapters:
