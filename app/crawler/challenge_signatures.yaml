@@ -32,6 +32,7 @@ captcha_domains:
 login_domains:
   - "passport.jd.com"
   - "safe.jd.com"
+  - "cfe.m.jd.com"
   - "login.taobao.com"
   - "sec.taobao.com"
 

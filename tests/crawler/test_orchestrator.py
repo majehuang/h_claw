@@ -193,19 +193,21 @@ async def test_captcha_on_last_layer_returns_captcha_required(tmp_path):
     assert outcome.error_code == "CHALLENGE_NOT_SOLVED"
 
 
-async def test_login_redirect_on_last_layer_returns_login_required(tmp_path):
+async def test_login_redirect_stops_escalation(tmp_path):
+    # 登录跳转和交互式挑战一样：换层解不开登录墙，应在首个命中层立即停止升级。
     login = _resp(final=LOGIN_URL)
-    orch = _orchestrator(
-        tmp_path,
-        http=FakeFetcher(login),
-        browser=FakeFetcher(login),
-        stealth=FakeFetcher(login),
-    )
+    http = FakeFetcher(login)
+    browser = FakeFetcher(_resp())
+    stealth = FakeFetcher(_resp())
+    orch = _orchestrator(tmp_path, http=http, browser=browser, stealth=stealth)
 
     outcome = await orch.crawl(CrawlRequest(url="https://shop.example.com/p/1"))
 
     assert outcome.status == "LOGIN_REQUIRED"
     assert outcome.error_code == "LOGIN_WALL"
+    assert http.calls == ["https://shop.example.com/p/1"]
+    assert browser.calls == []  # 登录跳转后停止升级
+    assert stealth.calls == []
 
 
 async def test_ssrf_validation_failure_is_terminal_without_fetch(tmp_path):

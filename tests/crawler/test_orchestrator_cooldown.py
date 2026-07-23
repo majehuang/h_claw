@@ -20,8 +20,10 @@ USABLE_HTML = (
 CAPTCHA_HTML = "<html><body>请完成安全验证</body></html>"
 
 
-def _resp(url, html=USABLE_HTML, status=200):
-    return FetchResponse(request_url=url, final_url=url, status_code=status, html=html)
+def _resp(url, html=USABLE_HTML, status=200, final=None):
+    return FetchResponse(
+        request_url=url, final_url=final or url, status_code=status, html=html
+    )
 
 
 class FakeDB:
@@ -142,6 +144,26 @@ async def test_success_clears_cooldown_for_session_only(tmp_path):
     fetcher.result = _resp("https://item.taobao.com/i", html=CAPTCHA_HTML)
     again = await orch.crawl(CrawlRequest(url="https://item.taobao.com/i", force_refresh=True))
     assert again.status == "CAPTCHA_REQUIRED"
+
+
+async def test_login_redirect_sets_cooldown_and_blocks_repeat(tmp_path):
+    # login_redirect 复用挑战冷却：没有 session 就不可能通过，重复调用不该
+    # 每次都重新跑一遍上游请求（对应 crawl_url 对同一登录墙链接反复变慢的问题）。
+    clock = Clock(datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc))
+    fetcher = SwitchableFetcher(
+        _resp("https://item.jd.com/i", final="https://passport.jd.com/new/login.aspx")
+    )
+    orch = _orch(tmp_path, fetcher, clock, challenge_cooldown=600)
+
+    first = await orch.crawl(CrawlRequest(url="https://item.jd.com/i"))
+    assert first.status == "LOGIN_REQUIRED"
+    assert first.error_code == "LOGIN_WALL"
+    assert fetcher.calls == 1
+
+    second = await orch.crawl(CrawlRequest(url="https://item.jd.com/i"))
+    assert second.status == "COOLDOWN"
+    assert second.error_code == "CHALLENGE_COOLDOWN"
+    assert fetcher.calls == 1  # 冷却期内没有新的上游访问
 
 
 async def test_normal_success_never_sets_cooldown(tmp_path):

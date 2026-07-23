@@ -36,6 +36,11 @@ _DETECTION_TERMINAL = {
 }
 _DETECTION_TERMINAL_DEFAULT = ("BLOCKED", "UPSTREAM_BLOCKED")
 
+# 升级到下一层无法绕过的检测原因：交互式挑战（滑块/验证码）换层也解不开，
+# login_redirect 同理——目标站点要的是登录态，不是"更像真人的抓取层"，
+# 继续升级只会对同一个跳转再打一次浏览器/隐身层，白白拖慢并浪费资源。
+_NON_ESCALATING_REASONS = INTERACTIVE_CHALLENGE_REASONS | {"login_redirect"}
+
 # 完整升级顺序：从轻到重。域名 preferred_mode 指定的是「起始层」，
 # 从该层截断到末尾即为该域名的升级链（如 stealth → 仅 L3，browser → L2+L3）。
 _ESCALATION_ORDER = ("http", "browser", "stealth")
@@ -265,9 +270,15 @@ class Orchestrator:
     def _cooldown_for_reason(
         self, verdict_reason: str | None, last_error: FetchError | None
     ) -> tuple[int, str] | None:
-        """按原因选择冷却时长与标签：交互式挑战 > 403/503 阻断（HC-007）。"""
+        """按原因选择冷却时长与标签：交互式挑战/登录墙 > 403/503 阻断（HC-007）。
+
+        login_redirect 复用挑战冷却时长：没有 session 就不可能通过，同一域名在
+        冷却期内直接短路，避免每次调用都重新跑一遍三层升级（见 HC-005 同款逻辑）。
+        """
         if verdict_reason in INTERACTIVE_CHALLENGE_REASONS:
             return self._challenge_cooldown, "challenge"
+        if verdict_reason == "login_redirect":
+            return self._challenge_cooldown, "login"
         if verdict_reason == "blocked_status":
             return self._blocked_cooldown, "blocked"
         return None
@@ -341,9 +352,10 @@ class Orchestrator:
                     job_id, request, response, mode_name, cache_key
                 )
             last_verdict_reason = verdict.reason
-            # HC-005/UT-019：检测到交互式挑战（滑块/验证码）后立即停止自动升级——
-            # 升级到 stealth 也解不了人工挑战，只会对目标站放大请求。
-            if verdict.is_interactive_challenge:
+            # HC-005/UT-019：检测到交互式挑战（滑块/验证码）或登录跳转后立即停止
+            # 自动升级——升级到 stealth 也解不了人工挑战或登录墙，只会对目标站
+            # 放大请求、白白拖慢响应。
+            if verdict.reason in _NON_ESCALATING_REASONS:
                 break
 
         return await self._terminal_outcome(

@@ -110,6 +110,23 @@ def test_jd_risk_verify_redirect_is_login_redirect():
     assert result.reason == "login_redirect"
 
 
+def test_jd_risk_handler_redirect_is_login_redirect():
+    # 实测发现：item.jd.com 未登录时常先落到 cfe.m.jd.com 的风控中间页，
+    # 不是 passport.jd.com——这个域名之前没在名单里，导致继续升级到 stealth 层，
+    # 单次 crawl_url 白白多花几十秒（HC-005 回归用例）。
+    result = detect(
+        _response(
+            request_url="https://item.jd.com/100012043978.html",
+            final_url=(
+                "https://cfe.m.jd.com/privatedomain/risk_handler/03101900/"
+                "?returnurl=https%3A%2F%2Fitem.jd.com%2F100012043978.html"
+            ),
+        )
+    )
+    assert result.ok is False
+    assert result.reason == "login_redirect"
+
+
 def test_taobao_login_redirect_is_not_url_mismatch():
     result = detect(
         _response(
