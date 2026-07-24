@@ -33,8 +33,11 @@ class _QrBrowserAdapter:
     _expired_selector: str | None = None
     # HC-011：登录成功后允许落地的业务 host（registrable domain 后缀匹配）。
     _success_hosts: tuple[str, ...] = ()
-    # 安全验证/异常校验中间页标记：跳离登录页但仍在这些页上时按 PENDING（用户尚未完成）。
-    _security_url_markers: tuple[str, ...] = ()
+    # 安全验证/异常校验中间页：跳离登录页但仍在这些页上时按 PENDING（用户尚未完成）。
+    # 分 host 与 path 两类，且只对 host+path 匹配——绝不匹配 query，否则 URL 上随便一个
+    # ?from=verify / ?risk=0 参数就会把已登录页误判成安全页，一直卡到 TTL 超时。
+    _security_hosts: tuple[str, ...] = ()
+    _security_path_markers: tuple[str, ...] = ()
     # 登录态 DOM 证据选择器；配置后必须可见才算成功，None 则跳过这一项。
     _logged_in_selector: str | None = None
 
@@ -83,12 +86,23 @@ class _QrBrowserAdapter:
             return "PENDING"
 
         # 已跳离登录页，但不再直接判成功（HC-011）。
-        # 安全验证/异常校验中间页：用户还需继续操作，保持等待。
-        if any(marker in url for marker in self._security_url_markers):
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+
+        # 导航尚未落地：about:blank / 空 URL / 非 http(s) scheme。此时页面还在跳转途中，
+        # 必须继续等待。绝不能判 FAILED——FAILED 是终态，会立刻关掉上下文杀死本次登录，
+        # 表现为"时好时坏登不上"。
+        if not host or parts.scheme not in ("http", "https"):
+            return "PENDING"
+
+        # 安全验证/异常校验中间页：只对 host + path 匹配，不含 query。
+        probe = f"{host}{parts.path}"
+        if _host_allowed(host, self._security_hosts) or any(
+            marker in probe for marker in self._security_path_markers
+        ):
             return "PENDING"
 
         # 落到非允许 host（第三方/外部域名）→ 硬失败，不封存 profile（UT-030）。
-        host = urlsplit(url).hostname or ""
         if self._success_hosts and not _host_allowed(host, self._success_hosts):
             return "FAILED"
 
@@ -108,7 +122,8 @@ class JdBrowserLoginAdapter(_QrBrowserAdapter):
     _login_url_markers = ("passport.jd.com", "login.aspx")
     _expired_selector = "#J-qrcoderror"  # 过期时变可见
     _success_hosts = ("jd.com", "jd.hk")
-    _security_url_markers = ("safe.jd.com", "verify", "security", "risk")
+    _security_hosts = ("safe.jd.com",)
+    _security_path_markers = ("/verify", "/security", "/risk")
 
 
 class TaobaoBrowserLoginAdapter(_QrBrowserAdapter):
@@ -117,4 +132,5 @@ class TaobaoBrowserLoginAdapter(_QrBrowserAdapter):
     _qr_selector = ".qrcode-img"
     _login_url_markers = ("login.taobao.com", "login.htm", "login.jhtml")
     _success_hosts = ("taobao.com", "tmall.com")
-    _security_url_markers = ("sec.taobao.com", "security-check", "havana", "unusual")
+    _security_hosts = ("sec.taobao.com",)
+    _security_path_markers = ("/security-check", "/havana", "/unusual")
