@@ -7,6 +7,7 @@ import pytest
 
 from app.crawler.browser_login import close_browser_login  # noqa: F401 (契约引用)
 from app.crawler.login_adapters.browser import (
+    JdBrowserLoginAdapter,
     TaobaoBrowserLoginAdapter,
     _QrBrowserAdapter,
 )
@@ -79,3 +80,44 @@ async def test_external_domain_is_failure():
 async def test_third_party_host_not_in_allowlist_fails():
     page = FakePage("https://accounts.google.com/o/oauth2")
     assert await TaobaoBrowserLoginAdapter().poll_status(page) == "FAILED"
+
+
+# --- 回归：登录不稳定的两个成因（见 HC-011 修复） ---
+
+@pytest.mark.parametrize("adapter", [JdBrowserLoginAdapter(), TaobaoBrowserLoginAdapter()])
+@pytest.mark.parametrize("url", ["about:blank", "", "data:text/html,x"])
+async def test_navigation_in_flight_is_pending_not_failed(adapter, url):
+    """导航未落地（about:blank / 空 URL / 非 http scheme）必须 PENDING。
+
+    判 FAILED 会让 LoginManager 立刻收尾并关闭上下文，直接杀死本次登录——
+    由于 page.url 在跳转途中短暂为 about:blank，这会表现为"时好时坏登不上"。
+    """
+    assert await adapter.poll_status(FakePage(url)) == "PENDING"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.jd.com/?from=verify",       # query 里含 verify
+        "https://item.jd.com/123.html?risk=0",   # query 里含 risk
+        "https://order.jd.com/center/list.action",
+    ],
+)
+async def test_query_string_does_not_trigger_security_false_positive(url):
+    """安全页判定只看 host+path：query 里的 verify/risk 不得把已登录页卡成 PENDING。"""
+    assert await JdBrowserLoginAdapter().poll_status(FakePage(url)) == "SUCCESS"
+
+
+async def test_taobao_query_marker_does_not_block_success():
+    page = FakePage("https://www.taobao.com/?spm=a21bo.unusual")
+    assert await TaobaoBrowserLoginAdapter().poll_status(page) == "SUCCESS"
+
+
+async def test_real_security_host_and_path_still_pending():
+    """真正的安全页（host 或 path 命中）仍必须 PENDING，不能因修复而放行。"""
+    assert await JdBrowserLoginAdapter().poll_status(
+        FakePage("https://safe.jd.com/dialog/handler.action")
+    ) == "PENDING"
+    assert await JdBrowserLoginAdapter().poll_status(
+        FakePage("https://passport.jd.com/verify/step")
+    ) == "PENDING"
